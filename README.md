@@ -5,19 +5,64 @@ tablas tocan, cuántas filas cambia cada sentencia, qué triggers se disparan y
 qué riesgos tienen (COMMIT al final, `UPDATE` sin `WHERE`, `DROP` peligrosos...).
 Todo funciona en local: el script y los datos no salen de tu equipo.
 
-Fases hechas: **F1** (análisis estático, lectura del esquema e impacto) y
-**F2** (ejecución con respaldo y `deshacer`). Las siguientes (interfaz web con
-aprobaciones, explicación con IA local) están en el plan del proyecto.
+Fases hechas: **F1** (análisis estático, lectura del esquema e impacto),
+**F2** (ejecución con respaldo y `deshacer`) y **F3** (aplicación web con
+aprobación por otra persona y auditoría). La siguiente (explicación con IA
+local) está en el plan del proyecto.
 
 ## Instalación
 
 ```
 python -m venv .venv
 .venv\Scripts\activate
-pip install -e .[desarrollo]
+pip install -e .[desarrollo]      # o .[web] para usar solo la web
 ```
 
-## Uso
+## Aplicación web (aprobaciones)
+
+```
+copy guardian.ejemplo.toml guardian.toml          # y ajusta las conexiones
+guardian usuario crear ana --rol solicitante --nombre-completo "Ana Ruiz"
+guardian usuario crear luis --rol aprobador
+guardian usuario crear admin --rol admin
+guardian web                                       # http://127.0.0.1:8000
+```
+
+El flujo de cada script:
+
+1. **Alguien lo envía.** Se analiza en ese momento contra la base de datos
+   elegida (contando filas o simulando, según la conexión) y se guarda el
+   informe.
+2. **Otra persona lo aprueba o lo rechaza.** Nadie puede aprobar lo suyo, y
+   no se aprueba sin el impacto calculado. Se aprueba ese script exacto (se
+   comprueba su hash) con esos números de filas.
+3. **Se ejecuta** con respaldo (como `guardian ejecutar`). Si alguna sentencia
+   cambia un número de filas distinto del aprobado, no se aplica nada y hay
+   que volver a analizar y aprobar.
+4. **Un aprobador puede deshacerla** (como `guardian deshacer`).
+
+En el detalle de cada solicitud, el script se muestra con las consecuencias
+anotadas al margen de cada sentencia: filas que cambia, cambios por triggers
+y avisos.
+
+Roles: **solicitante** (envía y ejecuta lo suyo una vez aprobado),
+**aprobador** (además aprueba lo de otros, rechaza, ejecuta y deshace) y
+**admin** (además gestiona usuarios desde la web).
+
+Cada acción queda en un registro de auditoría encadenado con hashes: si
+alguien modifica o borra un evento a mano en la base de datos de la
+aplicación, la página de Auditoría lo detecta. La ejecución también anota en
+`guardian_backup.ejecuciones` quién la pidió y quién la aprobó.
+
+Seguridad: las cadenas de conexión solo están en `guardian.toml` (o en
+variables de entorno con `dsn_env`); las contraseñas de usuario se guardan
+con PBKDF2; la sesión va en una cookie HttpOnly y SameSite=Strict; las
+peticiones que cambian algo exigen la cabecera `X-Guardian`; tras 5
+contraseñas fallidas el usuario se bloquea 5 minutos. Por defecto solo
+escucha en `127.0.0.1`: para el equipo, ponlo detrás de un proxy con HTTPS
+(`--host 0.0.0.0` avisa de ello).
+
+## Uso desde la línea de comandos
 
 ```
 # Solo análisis estático (no necesita base de datos)

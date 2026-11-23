@@ -2,6 +2,10 @@
 pglast>=8
 # Conexión a PostgreSQL
 psycopg[binary]>=3.2
+# Aplicación web (guardian web)
+fastapi>=0.110
+uvicorn[standard]>=0.29
 # Desarrollo
 pytest
 flake8
+httpx

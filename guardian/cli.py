@@ -4,6 +4,8 @@
     guardian ejecutar script.sql [--dsn ...]
     guardian deshacer ID [--dsn ...] [--solo-sql]
     guardian historial [--dsn ...]
+    guardian web [--config guardian.toml] [--host ...] [--puerto ...]
+    guardian usuario crear NOMBRE --rol admin [--config guardian.toml]
 """
 
 import argparse
@@ -110,6 +112,32 @@ def _argumentos(argv):
     _opcion_dsn(h, "Obligatoria.")
     h.add_argument("--limite", type=int, default=20,
                    help="número de ejecuciones (por defecto 20)")
+
+    config = os.environ.get("GUARDIAN_CONFIG", "guardian.toml")
+    w = sub.add_parser(
+        "web", help="arranca la aplicación web de aprobaciones",
+        description="Servidor web para pedir, aprobar, ejecutar y deshacer "
+                    "scripts con registro de auditoría.")
+    w.add_argument("--config", type=Path, default=Path(config),
+                   help="archivo de configuración (por defecto "
+                        "guardian.toml o GUARDIAN_CONFIG)")
+    w.add_argument("--host", default="127.0.0.1",
+                   help="dirección en la que escucha (por defecto solo este "
+                        "equipo). Para el equipo, ponlo detrás de un proxy "
+                        "con HTTPS")
+    w.add_argument("--puerto", type=int, default=8000)
+
+    u = sub.add_parser("usuario", help="gestiona usuarios de la web")
+    usub = u.add_subparsers(dest="accion", required=True)
+    uc = usub.add_parser("crear", help="crea un usuario (pide la "
+                                       "contraseña)")
+    uc.add_argument("nombre")
+    uc.add_argument("--rol", required=True,
+                    choices=("solicitante", "aprobador", "admin"))
+    uc.add_argument("--nombre-completo", default="")
+    uc.add_argument("--config", type=Path, default=Path(config))
+    ul = usub.add_parser("listar", help="lista los usuarios")
+    ul.add_argument("--config", type=Path, default=Path(config))
     return parser.parse_args(argv)
 
 
@@ -298,12 +326,86 @@ def _historial(args):
     return SALIDA_OK
 
 
+def _cargar_config(ruta):
+    from guardian.web.config import ErrorConfig, cargar
+
+    try:
+        return cargar(ruta)
+    except ErrorConfig as error:
+        print(f"Error en la configuración. {error}", file=sys.stderr)
+        return None
+
+
+def _web(args):
+    try:
+        import uvicorn
+
+        from guardian.web.app import crear_app
+    except ImportError:
+        print("Faltan las dependencias web: pip install -e .[web]",
+              file=sys.stderr)
+        return SALIDA_ERROR
+    config = _cargar_config(args.config)
+    if config is None:
+        return SALIDA_ERROR
+    app = crear_app(config)
+    if not app.state.almacen.hay_usuarios():
+        print("Aún no hay usuarios. Crea el primero con:\n"
+              "  guardian usuario crear NOMBRE --rol admin",
+              file=sys.stderr)
+        return SALIDA_ERROR
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        print("Aviso: escuchando fuera de este equipo sin HTTPS. Pon un "
+              "proxy con HTTPS delante (las contraseñas y la cookie de "
+              "sesión viajan en cada petición).", file=sys.stderr)
+    print(f"SQL Guardian en http://{args.host}:{args.puerto}  "
+          f"(datos: {config.base_datos})")
+    uvicorn.run(app, host=args.host, port=args.puerto, log_level="warning")
+    return SALIDA_OK
+
+
+def _usuario(args):
+    import getpass
+
+    from guardian.web.almacen import Almacen
+
+    config = _cargar_config(args.config)
+    if config is None:
+        return SALIDA_ERROR
+    almacen = Almacen(config.base_datos)
+    if args.accion == "listar":
+        for u in almacen.usuarios():
+            estado = "" if u["activo"] else "  (desactivado)"
+            print(f"{u['nombre']:<20} {u['rol']:<12} "
+                  f"{u['nombre_completo']}{estado}")
+        return SALIDA_OK
+    clave = os.environ.get("GUARDIAN_CLAVE_NUEVA")
+    if clave is None:
+        clave = getpass.getpass("Contraseña (mínimo 10 caracteres): ")
+        if getpass.getpass("Repítela: ") != clave:
+            print("Las contraseñas no coinciden.", file=sys.stderr)
+            return SALIDA_ERROR
+    try:
+        almacen.crear_usuario(args.nombre, clave, args.rol,
+                              args.nombre_completo)
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return SALIDA_ERROR
+    with almacen.transaccion() as db:
+        almacen.registrar(db, "consola", "crear_usuario", None,
+                          {"usuario": args.nombre, "rol": args.rol})
+    print(f"Usuario {args.nombre} creado con el rol {args.rol}.")
+    return SALIDA_OK
+
+
 def main(argv=None):
     # La consola de Windows puede no usar UTF-8 por defecto.
     for flujo in (sys.stdout, sys.stderr):
         if hasattr(flujo, "reconfigure"):
             flujo.reconfigure(encoding="utf-8", errors="replace")
     args = _argumentos(argv)
+    if args.orden in ("web", "usuario"):
+        return _web(args) if args.orden == "web" else _usuario(args)
     if args.orden != "analizar" and not args.dsn:
         print(f"`guardian {args.orden}` necesita una conexión (--dsn o "
               "GUARDIAN_DSN).", file=sys.stderr)

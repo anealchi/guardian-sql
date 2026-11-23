@@ -1,0 +1,1061 @@
+// SQL Guardian — interfaz web sin dependencias.
+// Todo el contenido se crea con nodos DOM y textContent (nunca innerHTML
+// con datos), así que un script o un comentario no pueden inyectar HTML.
+
+"use strict";
+
+const estado = { usuario: null, conexiones: [] };
+const principal = document.getElementById("principal");
+
+const NOMBRES_ESTADO = {
+  pendiente: "Pendiente de aprobar",
+  aprobada: "Aprobada",
+  ejecutando: "Ejecutando",
+  ejecutada: "Ejecutada",
+  no_aplicada: "No aplicada",
+  fallida: "Fallida",
+  rechazada: "Rechazada",
+  cancelada: "Cancelada",
+  deshecha: "Deshecha",
+};
+
+const NOMBRES_ROL = {
+  solicitante: "solicitante",
+  aprobador: "aprobador",
+  admin: "administrador",
+};
+
+const NOMBRES_VEREDICTO = {
+  bloqueado: "Bloqueado",
+  revisar: "Revisar",
+  ok: "Sin riesgos altos",
+};
+
+const EVENTOS = {
+  crear: "Envió la solicitud",
+  aprobar: "Aprobó",
+  rechazar: "Rechazó",
+  cancelar: "Canceló la solicitud",
+  comentar: "Comentó",
+  reanalizar: "Volvió a analizar el script",
+  ejecucion_iniciada: "Empezó la ejecución",
+  ejecucion_ejecutada: "Ejecutó y aplicó los cambios",
+  ejecucion_no_aplicada: "Ejecutó, pero no se aplicó nada",
+  ejecucion_fallida: "La ejecución falló",
+  deshacer: "Deshizo la ejecución",
+  deshacer_fallido: "No pudo deshacer la ejecución",
+  acceso: "Inició sesión",
+  acceso_fallido: "Intento de acceso fallido",
+  crear_usuario: "Creó un usuario",
+  activar_usuario: "Activó un usuario",
+  desactivar_usuario: "Desactivó un usuario",
+};
+
+const EVENTOS_BUENOS = new Set(["aprobar", "ejecucion_ejecutada"]);
+const EVENTOS_MALOS = new Set([
+  "rechazar", "ejecucion_no_aplicada", "ejecucion_fallida",
+  "deshacer_fallido", "acceso_fallido",
+]);
+
+// --- Utilidades ---------------------------------------------------------
+
+function h(etiqueta, atributos, ...hijos) {
+  const nodo = document.createElement(etiqueta);
+  for (const [clave, valor] of Object.entries(atributos || {})) {
+    if (valor === null || valor === undefined || valor === false) continue;
+    if (clave === "clase") nodo.className = valor;
+    else if (/^al[A-Z]/.test(clave)) nodo.addEventListener(
+      clave.slice(2).toLowerCase(), valor);
+    else if (valor === true) nodo.setAttribute(clave, "");
+    else nodo.setAttribute(clave, valor);
+  }
+  for (const hijo of hijos.flat()) {
+    if (hijo === null || hijo === undefined || hijo === false) continue;
+    nodo.append(hijo instanceof Node ? hijo : document.createTextNode(hijo));
+  }
+  return nodo;
+}
+
+function vaciar(nodo, ...hijos) {
+  nodo.replaceChildren(...hijos.flat().filter(Boolean));
+}
+
+const formatoFecha = new Intl.DateTimeFormat("es-ES", {
+  dateStyle: "medium", timeStyle: "short",
+});
+
+function fecha(iso) {
+  return iso ? formatoFecha.format(new Date(iso)) : "—";
+}
+
+function numero(n) {
+  return n === null || n === undefined ? "—" : n.toLocaleString("es-ES");
+}
+
+function filasTexto(n) {
+  return n === 1 ? "fila" : "filas";
+}
+
+function avisar(texto, esError = false) {
+  const aviso = document.querySelector(".aviso");
+  aviso.textContent = texto;
+  aviso.classList.toggle("error", esError);
+  aviso.hidden = false;
+  clearTimeout(avisar.temporizador);
+  avisar.temporizador = setTimeout(() => { aviso.hidden = true; }, 6000);
+}
+
+class ErrorApi extends Error {
+  constructor(mensaje, codigo) { super(mensaje); this.codigo = codigo; }
+}
+
+async function api(metodo, ruta, cuerpo) {
+  const opciones = { method: metodo, headers: {}, credentials: "same-origin" };
+  if (metodo !== "GET") opciones.headers["X-Guardian"] = "1";
+  if (cuerpo !== undefined) {
+    opciones.headers["Content-Type"] = "application/json";
+    opciones.body = JSON.stringify(cuerpo);
+  }
+  const respuesta = await fetch(ruta, opciones);
+  let datos = null;
+  try { datos = await respuesta.json(); } catch { datos = null; }
+  if (respuesta.status === 401 && ruta !== "/api/sesion") {
+    estado.usuario = null;
+    mostrarAcceso();
+    throw new ErrorApi("Tu sesión ha caducado. Vuelve a iniciar sesión.", 401);
+  }
+  if (!respuesta.ok) {
+    let detalle = datos && datos.detail;
+    if (Array.isArray(detalle)) {
+      detalle = detalle.map((d) => d.msg).join(". ");
+    }
+    throw new ErrorApi(detalle || `Error ${respuesta.status}.`,
+      respuesta.status);
+  }
+  return datos;
+}
+
+function esAprobador() {
+  return estado.usuario && ["aprobador", "admin"].includes(estado.usuario.rol);
+}
+
+function etiquetaEstado(nombre) {
+  return h("span", { clase: `estado estado-${nombre}` },
+    NOMBRES_ESTADO[nombre] || nombre);
+}
+
+function etiquetaNivel(nivel) {
+  const clase = { "crítico": "critico" }[nivel] || nivel;
+  return h("span", { clase: `nivel nivel-${clase}` }, nivel);
+}
+
+// Botón que se desactiva mientras espera y muestra el error si falla.
+function botonAccion(texto, clase, accion) {
+  const boton = h("button", { type: "button", clase: `boton ${clase}` },
+    texto);
+  boton.addEventListener("click", async () => {
+    boton.disabled = true;
+    try { await accion(); } catch (error) {
+      if (error.codigo !== 401) avisar(error.message, true);
+    } finally { boton.disabled = false; }
+  });
+  return boton;
+}
+
+// Diálogo de confirmación con comentario opcional u obligatorio.
+function confirmar({ titulo, texto, boton, clase = "boton-principal",
+  comentario = null }) {
+  return new Promise((resolver) => {
+    const area = comentario ? h("textarea", {
+      rows: "3", "aria-label": comentario.etiqueta,
+      placeholder: comentario.etiqueta,
+    }) : null;
+    const error = h("p", { clase: "error-formulario", hidden: true });
+    const dialogo = h("dialog", { "aria-labelledby": "dialogo-titulo" },
+      h("h2", { id: "dialogo-titulo" }, titulo),
+      h("p", {}, texto),
+      area, error,
+      h("div", { clase: "acciones" },
+        h("button", {
+          type: "button", clase: "boton",
+          alClick: () => { dialogo.close(); resolver(null); },
+        }, "Volver"),
+        h("button", {
+          type: "button", clase: `boton ${clase}`,
+          alClick: () => {
+            const valor = area ? area.value.trim() : "";
+            if (comentario && comentario.obligatorio && !valor) {
+              error.textContent = "Escribe el motivo antes de continuar.";
+              error.hidden = false;
+              area.focus();
+              return;
+            }
+            dialogo.close();
+            resolver({ comentario: valor });
+          },
+        }, boton)));
+    dialogo.addEventListener("cancel", () => resolver(null));
+    dialogo.addEventListener("close", () => dialogo.remove());
+    document.body.append(dialogo);
+    dialogo.showModal();
+    (area || dialogo.querySelector(".boton")).focus();
+  });
+}
+
+// --- Navegación -----------------------------------------------------------
+
+const rutas = [
+  [/^#?\/?$/, "bandeja", verBandeja],
+  [/^#\/nueva$/, "nueva", verNueva],
+  [/^#\/solicitud\/(\d+)$/, "bandeja", verDetalle],
+  [/^#\/auditoria$/, "auditoria", verAuditoria],
+  [/^#\/usuarios$/, "usuarios", verUsuarios],
+];
+
+async function navegar() {
+  if (!estado.usuario) return;
+  const hash = location.hash || "#/";
+  for (const [patron, seccion, vista] of rutas) {
+    const coincide = hash.match(patron);
+    if (!coincide) continue;
+    document.querySelectorAll(".menu a").forEach((a) => {
+      if (a.dataset.seccion === seccion) a.setAttribute("aria-current", "page");
+      else a.removeAttribute("aria-current");
+    });
+    vaciar(principal, h("p", { clase: "cargando" }, "Cargando…"));
+    try {
+      await vista(...coincide.slice(1));
+    } catch (error) {
+      if (error.codigo !== 401) {
+        vaciar(principal, h("div", { clase: "vacio" },
+          h("h2", {}, "No se ha podido cargar esta página"),
+          h("p", {}, error.message),
+          h("a", { href: "#/" }, "Volver a las solicitudes")));
+      }
+    }
+    return;
+  }
+  location.hash = "#/";
+}
+
+window.addEventListener("hashchange", navegar);
+
+// --- Acceso ---------------------------------------------------------------
+
+function mostrarAcceso() {
+  document.querySelector(".barra").hidden = true;
+  const error = h("p", { clase: "error-formulario", hidden: true,
+    role: "alert" });
+  const nombre = h("input", { type: "text", name: "nombre",
+    autocomplete: "username", required: true, autofocus: true });
+  const clave = h("input", { type: "password", name: "clave",
+    autocomplete: "current-password", required: true });
+  const boton = h("button", { type: "submit",
+    clase: "boton boton-principal" }, "Entrar");
+  const formulario = h("form", { clase: "formulario" },
+    h("label", { clase: "campo" }, h("span", {}, "Usuario"), nombre),
+    h("label", { clase: "campo" }, h("span", {}, "Contraseña"), clave),
+    error, h("div", { clase: "acciones-formulario" }, boton));
+  formulario.addEventListener("submit", async (evento) => {
+    evento.preventDefault();
+    boton.disabled = true;
+    error.hidden = true;
+    try {
+      estado.usuario = await api("POST", "/api/sesion", {
+        nombre: nombre.value, clave: clave.value,
+      });
+      await arrancar();
+    } catch (e) {
+      error.textContent = e.message;
+      error.hidden = false;
+      clave.select();
+    } finally { boton.disabled = false; }
+  });
+  vaciar(principal, h("section", { clase: "acceso" },
+    h("div", {},
+      h("h1", {}, "SQL Guardian"),
+      h("p", { clase: "secundario" },
+        "Revisa, aprueba y ejecuta scripts de producción con respaldo.")),
+    formulario));
+  nombre.focus();
+}
+
+async function arrancar() {
+  const barra = document.querySelector(".barra");
+  barra.hidden = false;
+  barra.querySelector(".cuenta-nombre").textContent =
+    `${estado.usuario.nombre_completo || estado.usuario.nombre} ` +
+    `(${NOMBRES_ROL[estado.usuario.rol]})`;
+  barra.querySelector("[data-solo-admin]").hidden =
+    estado.usuario.rol !== "admin";
+  estado.conexiones = await api("GET", "/api/conexiones");
+  await navegar();
+}
+
+document.getElementById("salir").addEventListener("click", async () => {
+  try { await api("DELETE", "/api/sesion"); } catch { /* da igual */ }
+  estado.usuario = null;
+  mostrarAcceso();
+});
+
+// --- Bandeja --------------------------------------------------------------
+
+const FILTROS = [
+  ["todas", "Todas", null],
+  ["pendiente", "Pendientes", ["pendiente"]],
+  ["aprobada", "Aprobadas", ["aprobada"]],
+  ["ejecutada", "Ejecutadas", ["ejecutada"]],
+  ["problemas", "Sin aplicar o fallidas", ["no_aplicada", "fallida"]],
+  ["cerradas", "Cerradas", ["rechazada", "cancelada", "deshecha"]],
+];
+
+async function verBandeja() {
+  const solicitudes = await api("GET", "/api/solicitudes");
+  let filtro = sessionStorage.getItem("filtro") || "todas";
+  if (!FILTROS.some(([clave]) => clave === filtro)) filtro = "todas";
+  const cuerpo = h("div");
+
+  const pintar = () => {
+    const estados = FILTROS.find(([clave]) => clave === filtro)[2];
+    const visibles = estados
+      ? solicitudes.filter((s) => estados.includes(s.estado))
+      : solicitudes;
+    const botones = FILTROS.map(([clave, texto, lista]) => {
+      const total = lista
+        ? solicitudes.filter((s) => lista.includes(s.estado)).length
+        : solicitudes.length;
+      return h("button", {
+        type: "button", "aria-pressed": String(clave === filtro),
+        alClick: () => {
+          filtro = clave;
+          sessionStorage.setItem("filtro", clave);
+          pintar();
+        },
+      }, texto, h("span", { clase: "cuenta-filtro" }, String(total)));
+    });
+    vaciar(cuerpo,
+      h("div", { clase: "filtros", role: "group",
+        "aria-label": "Filtrar por estado" }, botones),
+      visibles.length ? tablaSolicitudes(visibles) : bandejaVacia(filtro));
+  };
+
+  vaciar(principal,
+    h("div", { clase: "cabecera" },
+      h("div", {},
+        h("h1", {}, "Solicitudes"),
+        h("p", {}, "Cada script se analiza contra la base de datos al " +
+          "enviarlo. Lo aprueba otra persona y se ejecuta con respaldo.")),
+      h("a", { clase: "boton boton-principal", href: "#/nueva" },
+        "Nueva solicitud")),
+    cuerpo);
+  pintar();
+}
+
+function bandejaVacia(filtro) {
+  if (filtro !== "todas") {
+    return h("div", { clase: "vacio" },
+      h("p", {}, "No hay solicitudes en este estado."));
+  }
+  return h("div", { clase: "vacio" },
+    h("h2", {}, "Aún no hay solicitudes"),
+    h("p", {}, "Envía el primer script: verás qué tablas toca, cuántas " +
+      "filas cambia y qué riesgos tiene antes de que nadie lo apruebe."),
+    h("a", { clase: "boton boton-principal", href: "#/nueva" },
+      "Nueva solicitud"));
+}
+
+function tablaSolicitudes(solicitudes) {
+  const filas = solicitudes.map((s) => {
+    const enlace = h("a", { clase: "titulo-solicitud",
+      href: `#/solicitud/${s.id}` }, s.titulo);
+    const fila = h("tr", {},
+      h("td", { clase: "num secundario" }, String(s.id)),
+      h("td", {}, enlace, h("div", { clase: "secundario pequeno" },
+        s.script_nombre)),
+      h("td", { clase: "ocultable" }, s.conexion),
+      h("td", {}, etiquetaEstado(s.estado)),
+      h("td", { clase: "ocultable" }, s.veredicto
+        ? h("span", { clase: `nivel nivel-${s.veredicto === "bloqueado"
+          ? "critico" : s.veredicto === "revisar" ? "alto" : "ok"}` },
+        NOMBRES_VEREDICTO[s.veredicto]) : "—"),
+      h("td", { clase: "num" }, numero(s.filas_previstas)),
+      h("td", { clase: "ocultable" }, s.solicitante),
+      h("td", { clase: "ocultable secundario" }, fecha(s.actualizada)));
+    fila.addEventListener("click", (evento) => {
+      if (evento.target.closest("a")) return;
+      location.hash = `#/solicitud/${s.id}`;
+    });
+    return fila;
+  });
+  return h("table", { clase: "tabla" },
+    h("thead", {}, h("tr", {},
+      h("th", { clase: "num", scope: "col" }, "Nº"),
+      h("th", { scope: "col" }, "Solicitud"),
+      h("th", { clase: "ocultable", scope: "col" }, "Conexión"),
+      h("th", { scope: "col" }, "Estado"),
+      h("th", { clase: "ocultable", scope: "col" }, "Riesgo"),
+      h("th", { clase: "num", scope: "col" }, "Filas previstas"),
+      h("th", { clase: "ocultable", scope: "col" }, "Pedida por"),
+      h("th", { clase: "ocultable", scope: "col" }, "Último cambio"))),
+    h("tbody", {}, filas));
+}
+
+// --- Nueva solicitud ------------------------------------------------------
+
+function verNueva() {
+  const conexion = h("select", { name: "conexion", required: true },
+    estado.conexiones.map((c) => h("option", { value: c.nombre },
+      c.nombre)));
+  const notaConexion = h("small");
+  const ignorar = h("input", { type: "text", name: "ignorar",
+    placeholder: "parte_trabajo_tarea_log" });
+  const actualizarConexion = () => {
+    const c = estado.conexiones.find((x) => x.nombre === conexion.value);
+    if (!c) return;
+    const partes = [c.simular
+      ? "Se analiza ejecutando el script y deshaciéndolo: números exactos."
+      : "Se analiza contando filas, sin ejecutar nada."];
+    if (c.ignorar_tablas.length) {
+      partes.push(`Ignora siempre: ${c.ignorar_tablas.join(", ")}.`);
+    }
+    notaConexion.textContent = partes.join(" ");
+  };
+  conexion.addEventListener("change", actualizarConexion);
+  actualizarConexion();
+
+  const titulo = h("input", { type: "text", name: "titulo", required: true,
+    maxlength: "200", placeholder: "Borrar tareas duplicadas del parte" });
+  const motivo = h("textarea", { name: "motivo", rows: "3",
+    placeholder: "Qué problema resuelve y cómo se ha comprobado." });
+  const sql = h("textarea", { name: "sql", clase: "sql", required: true,
+    spellcheck: "false", placeholder: "BEGIN;\n…\nROLLBACK;" });
+  let nombreScript = "script.sql";
+  const archivo = h("input", { type: "file", accept: ".sql,text/plain" });
+  archivo.addEventListener("change", async () => {
+    const elegido = archivo.files[0];
+    if (!elegido) return;
+    sql.value = await elegido.text();
+    nombreScript = elegido.name;
+    if (!titulo.value) titulo.value = elegido.name.replace(/\.sql$/i, "")
+      .replace(/[_-]+/g, " ");
+  });
+  const indirectos = h("input", { type: "checkbox", name: "indirectos" });
+  const forzar = h("input", { type: "checkbox", name: "forzar" });
+  const error = h("p", { clase: "error-formulario", hidden: true,
+    role: "alert" });
+  const enviar = h("button", { type: "submit",
+    clase: "boton boton-principal" }, "Analizar y enviar");
+
+  const formulario = h("form", { clase: "formulario" },
+    h("div", { clase: "fila-campos" },
+      h("label", { clase: "campo" }, h("span", {}, "Título"), titulo),
+      h("label", { clase: "campo" }, h("span", {}, "Base de datos"),
+        conexion, notaConexion)),
+    h("label", { clase: "campo" }, h("span", {}, "Motivo"), motivo),
+    h("div", { clase: "campo" },
+      h("label", { for: "sql-nuevo" }, h("span", {}, "Script")),
+      archivo,
+      sql),
+    h("label", { clase: "campo" },
+      h("span", {}, "Tablas cuyos cambios indirectos no importan"),
+      ignorar,
+      h("small", {}, "Separadas por comas. Normalmente, tablas de log que " +
+        "rellenan los triggers.")),
+    h("label", { clase: "casilla" }, indirectos, h("span", {},
+      "Permitir cambios sin respaldo de triggers y cascadas",
+      h("small", {}, "Esos cambios no se podrán deshacer con el botón " +
+        "Deshacer."))),
+    h("label", { clase: "casilla" }, forzar, h("span", {},
+      "Ejecutar también lo que no se puede respaldar",
+      h("small", {}, "Cambios de estructura, TRUNCATE, DO… Quien apruebe " +
+        "lo verá marcado."))),
+    error,
+    h("div", { clase: "acciones-formulario" }, enviar,
+      h("a", { href: "#/" }, "Cancelar")));
+  sql.id = "sql-nuevo";
+
+  formulario.addEventListener("submit", async (evento) => {
+    evento.preventDefault();
+    enviar.disabled = true;
+    enviar.textContent = "Analizando el script…";
+    error.hidden = true;
+    try {
+      const creada = await api("POST", "/api/solicitudes", {
+        titulo: titulo.value, motivo: motivo.value,
+        conexion: conexion.value, script_nombre: nombreScript,
+        sql: sql.value,
+        ignorar_tablas: ignorar.value.split(",").map((t) => t.trim())
+          .filter(Boolean),
+        permitir_indirectos: indirectos.checked, forzar: forzar.checked,
+      });
+      location.hash = `#/solicitud/${creada.id}`;
+    } catch (e) {
+      if (e.codigo === 401) return;
+      error.textContent = e.message;
+      error.hidden = false;
+      enviar.disabled = false;
+      enviar.textContent = "Analizar y enviar";
+    }
+  });
+
+  vaciar(principal,
+    h("div", { clase: "cabecera" }, h("div", {},
+      h("h1", {}, "Nueva solicitud"),
+      h("p", {}, "Al enviarla se analiza contra la base de datos elegida. " +
+        "Nada se aplica hasta que otra persona la apruebe y se ejecute."))),
+    formulario);
+  titulo.focus();
+}
+
+// --- Detalle --------------------------------------------------------------
+
+async function verDetalle(id) {
+  const s = await api("GET", `/api/solicitudes/${id}`);
+  pintarDetalle(s);
+}
+
+function accionesDisponibles(s) {
+  const yo = estado.usuario;
+  const mia = s.solicitante_id === yo.id;
+  const lista = [];
+  const hacer = (accion, cuerpo) => async () => {
+    const actualizada = await api("POST",
+      `/api/solicitudes/${s.id}/${accion}`, cuerpo);
+    pintarDetalle(actualizada);
+    return actualizada;
+  };
+
+  if (s.estado === "aprobada" && (mia || esAprobador())) {
+    lista.push(botonAccion("Ejecutar", "boton-principal", async () => {
+      const ok = await confirmar({
+        titulo: "¿Ejecutar en " + s.conexion + "?",
+        texto: "Se ejecuta en una transacción con respaldo. Si alguna " +
+          "sentencia cambia un número de filas distinto del aprobado, se " +
+          "deshace todo y no se aplica nada.",
+        boton: "Ejecutar ahora",
+      });
+      if (!ok) return;
+      const r = await hacer("ejecutar")();
+      avisar(r.estado === "ejecutada" ? "Cambios aplicados."
+        : "No se ha aplicado nada. Revisa el resultado.", r.estado !== "ejecutada");
+    }));
+  }
+  if (s.estado === "pendiente" && esAprobador() && !mia) {
+    lista.push(botonAccion("Aprobar", "boton-principal", async () => {
+      const ok = await confirmar({
+        titulo: "¿Aprobar esta solicitud?",
+        texto: "Apruebas este script exacto con los números de filas del " +
+          "informe. Si cambian al ejecutarlo, no se aplicará.",
+        boton: "Aprobar",
+        comentario: { etiqueta: "Comentario (opcional)" },
+      });
+      if (ok) { await hacer("aprobar", ok)(); avisar("Aprobada."); }
+    }));
+  }
+  if (s.estado === "ejecutada" && esAprobador()) {
+    lista.push(botonAccion("Deshacer", "boton-peligro", async () => {
+      const ok = await confirmar({
+        titulo: "¿Deshacer la ejecución?",
+        texto: "Se restauran las filas respaldadas que siguen como las " +
+          "dejó la ejecución. Las que alguien haya cambiado después se " +
+          "dejan como están.",
+        boton: "Deshacer", clase: "boton-peligro",
+        comentario: { etiqueta: "Motivo", obligatorio: true },
+      });
+      if (ok) { await hacer("deshacer", ok)(); avisar("Ejecución deshecha."); }
+    }));
+  }
+  if (["pendiente", "aprobada", "no_aplicada"].includes(s.estado)
+      && (mia || esAprobador())) {
+    lista.push(botonAccion("Volver a analizar", "", async () => {
+      const r = await hacer("reanalizar")();
+      avisar(s.estado === "aprobada"
+        ? "Analizada de nuevo. La aprobación anterior queda anulada."
+        : "Analizada de nuevo.");
+      return r;
+    }));
+  }
+  if (["pendiente", "aprobada"].includes(s.estado) && esAprobador()) {
+    lista.push(botonAccion("Rechazar", "boton-peligro", async () => {
+      const ok = await confirmar({
+        titulo: "¿Rechazar esta solicitud?",
+        texto: "Quien la pidió verá el motivo en el historial.",
+        boton: "Rechazar", clase: "boton-peligro",
+        comentario: { etiqueta: "Motivo del rechazo", obligatorio: true },
+      });
+      if (ok) { await hacer("rechazar", ok)(); avisar("Rechazada."); }
+    }));
+  }
+  if (["pendiente", "aprobada"].includes(s.estado)
+      && (mia || yo.rol === "admin")) {
+    lista.push(botonAccion("Cancelar solicitud", "boton-texto", async () => {
+      const ok = await confirmar({
+        titulo: "¿Cancelar la solicitud?",
+        texto: "No se podrá aprobar ni ejecutar.",
+        boton: "Cancelar solicitud", clase: "boton-peligro",
+      });
+      if (ok) { await hacer("cancelar", ok)(); avisar("Cancelada."); }
+    }));
+  }
+  return lista;
+}
+
+function pintarDetalle(s) {
+  const informe = s.informe || {};
+  const opciones = s.opciones || {};
+  const meta = [
+    ["Base de datos", s.conexion],
+    ["Script", s.script_nombre],
+    ["Pedida por", s.solicitante],
+    s.aprobador ? ["Aprobada por", s.aprobador] : null,
+    s.ejecutor ? ["Ejecutada por", s.ejecutor] : null,
+  ].filter(Boolean);
+
+  const avisosOpciones = [];
+  if (opciones.forzar) avisosOpciones.push(
+    "Se pidió ejecutar también lo que no se puede respaldar (forzar).");
+  if (opciones.permitir_indirectos) avisosOpciones.push(
+    "Se permiten cambios de triggers y cascadas sin respaldo.");
+  if ((opciones.ignorar_tablas || []).length) avisosOpciones.push(
+    `Se ignoran los cambios indirectos en ${opciones.ignorar_tablas.join(", ")}.`);
+
+  vaciar(principal,
+    h("p", {}, h("a", { href: "#/" }, "Solicitudes")),
+    h("div", { clase: "detalle-cabecera" },
+      h("div", { clase: "cabecera" },
+        h("div", {},
+          h("h1", {}, s.titulo),
+          h("div", { clase: "linea-meta" },
+            h("span", {}, `Nº ${s.id}`), etiquetaEstado(s.estado),
+            h("span", {}, `Enviada ${fecha(s.creada)}`))),
+        h("div", { clase: "acciones" }, accionesDisponibles(s))),
+      h("div", { clase: "linea-meta" }, meta.map(([etiqueta, valor]) =>
+        h("span", {}, `${etiqueta}: `, h("b", {}, valor)))),
+      s.motivo ? h("p", { clase: "motivo" }, s.motivo) : null),
+    bloqueVeredicto(s, informe),
+    bloqueResultado(s),
+    informe.error ? h("div", { clase: "nota-bloque critico" },
+      h("h3", {}, "No se ha podido calcular el impacto"),
+      h("p", {}, informe.error),
+      h("p", { clase: "secundario" }, "Sin impacto no se puede aprobar. " +
+        "Usa Volver a analizar cuando la base de datos responda.")) : null,
+    avisosOpciones.length ? h("div", { clase: "nota-bloque alto" },
+      h("h3", {}, "Opciones de ejecución"),
+      h("ul", {}, avisosOpciones.map((t) => h("li", {}, t)))) : null,
+    scriptRevisado(s, informe),
+    h("div", { clase: "columnas" },
+      h("div", {}, seccionHallazgosGenerales(informe),
+        seccionTriggers(informe)),
+      seccionHistorial(s)));
+}
+
+function bloqueVeredicto(s, informe) {
+  if (!informe.veredicto) return null;
+  const nivel = informe.veredicto.nivel;
+  const impacto = informe.impacto;
+  const previstas = informe.filas_previstas;
+  const detalle = [];
+  if (impacto) {
+    detalle.push(impacto.modo === "simulacion"
+      ? "Simulado en la base de datos y deshecho."
+      : "Contado en la base de datos sin ejecutar nada.");
+    detalle.push(`PostgreSQL ${impacto.servidor}.`);
+  }
+  if (informe.tablas_modificadas.length) {
+    detalle.push(`Modifica ${informe.tablas_modificadas.join(", ")}.`);
+  }
+  if (s.informe_fecha) detalle.push(`Analizado ${fecha(s.informe_fecha)}.`);
+  const resultado = s.resultado || {};
+  const aplicadas = ["ejecutada", "deshecha"].includes(s.estado)
+    && resultado.filas_respaldadas !== undefined;
+  const cifra = aplicadas ? resultado.filas_respaldadas : previstas;
+  if (aplicadas && cifra !== previstas) {
+    detalle.unshift(`Se preveían ${numero(previstas)}.`);
+  }
+  return h("div", { clase: `veredicto veredicto-${nivel}` },
+    h("div", { clase: "cifra" }, numero(cifra),
+      h("small", {}, `${filasTexto(cifra)} ` +
+        (aplicadas ? "cambiadas" : "previstas"))),
+    h("p", { clase: "veredicto-texto" }, informe.veredicto.texto),
+    h("p", { clase: "secundario" }, detalle.join(" ")));
+}
+
+function bloqueResultado(s) {
+  const r = s.resultado;
+  if (!r) return null;
+  const partes = [];
+  let clase = "aplicado";
+  let titulo = "Cambios aplicados";
+  if (s.estado === "deshecha") {
+    clase = "";
+    titulo = "Ejecución deshecha";
+  } else if (s.estado !== "ejecutada") {
+    clase = "critico";
+    titulo = s.estado === "fallida" ? "La ejecución falló"
+      : "No se ha aplicado nada";
+  }
+  if (r.motivo) partes.push(h("p", {}, r.motivo));
+  if (r.discrepancias && r.discrepancias.length) {
+    partes.push(h("ul", {}, r.discrepancias.map((d) => h("li", {},
+      `Línea ${d.linea}, ${d.operacion} ${d.tabla || ""}: se aprobaron ` +
+      `${numero(d.aprobadas)} ${filasTexto(d.aprobadas)} y ahora serían ` +
+      `${numero(d.reales)}.`))));
+  }
+  if (r.filas_respaldadas !== undefined && s.estado !== "fallida") {
+    partes.push(h("p", { clase: "secundario" },
+      `${numero(r.filas_respaldadas)} ${filasTexto(r.filas_respaldadas)} ` +
+      `respaldadas` + (s.ejecucion_id ? ` en la ejecución ${s.ejecucion_id}.`
+        : ".")));
+  }
+  const sinRespaldo = (r.pasos || []).filter((p) => p.forzada
+    || Object.keys(p.indirectos || {}).length);
+  if (sinRespaldo.length) {
+    partes.push(h("p", {}, "Sin respaldo (no se deshacen): ",
+      sinRespaldo.map((p) => `línea ${p.linea}`).join(", "), "."));
+  }
+  if (r.deshacer) {
+    const d = r.deshacer;
+    partes.push(h("p", {}, `Deshecha: ${d.pasos.map((p) =>
+      `${numero(p.restauradas)} de ${numero(p.respaldadas)} filas en ` +
+      `${p.tabla}`).join("; ")}.`));
+    if (d.omitidas) partes.push(h("p", {}, `${numero(d.omitidas)} ` +
+      `${filasTexto(d.omitidas)} se dejaron como estaban porque habían ` +
+      "cambiado después de la ejecución."));
+  }
+  return h("div", { clase: `nota-bloque ${clase}` }, h("h3", {}, titulo),
+    partes);
+}
+
+// Avisos que resumen todo el script: van abajo, no en el margen.
+const AVISOS_DE_SCRIPT = new Set(["DML004", "DML005", "TX005"]);
+// Repite lo que ya dicen los efectos de la propia anotación.
+const AVISOS_REDUNDANTES = new Set(["SIM001"]);
+
+function sinEsquema(tabla) {
+  return tabla.replace(/^public\./, "");
+}
+
+function cambiosTexto([ins, upd, del]) {
+  const plural = (n, palabra) => `${numero(n)} ${palabra}${n === 1 ? "" : "s"}`;
+  return [ins && plural(ins, "insertada"), upd && plural(upd, "actualizada"),
+    del && plural(del, "borrada")].filter(Boolean).join(", ");
+}
+
+function textoHallazgo(hallazgo) {
+  if (hallazgo.codigo === "ESQ002") {
+    const nombres = [...hallazgo.mensaje.matchAll(
+      /([\w$]+): (?:BEFORE|AFTER|INSTEAD OF) /g)].map((m) => m[1]);
+    return nombres.length === 1
+      ? `Dispara el trigger ${nombres[0]}.`
+      : `Dispara ${nombres.length} triggers: ${nombres.join(", ")}.`;
+  }
+  return hallazgo.mensaje;
+}
+
+// Junta, por línea de inicio de sentencia, lo que se anota en el margen.
+// Devuelve { notas: línea → nodos, peso: línea → "riesgo" | "cambio" }.
+// Solo se resaltan las sentencias que cambian datos o tienen avisos.
+function anotacionesPorLinea(s, informe) {
+  const notas = new Map();
+  const peso = new Map();
+  const marcar = (linea, valor) => {
+    if (peso.get(linea) !== "riesgo") peso.set(linea, valor);
+  };
+  const anadir = (linea, nodo) => {
+    if (!linea) return;
+    if (!notas.has(linea)) notas.set(linea, []);
+    notas.get(linea).push(nodo);
+  };
+  const ejecutada = s.estado === "ejecutada";
+  const reales = new Map();
+  for (const p of (s.resultado && s.resultado.pasos) || []) {
+    reales.set(p.linea, p);
+  }
+  const impacto = informe.impacto;
+  for (const r of (impacto && impacto.resultados) || []) {
+    const real = ejecutada ? reales.get(r.linea) : null;
+    const filas = real ? real.filas : r.filas;
+    const etiqueta = real ? `${filasTexto(filas)} cambiadas`
+      : r.operacion === "SELECT" ? `${filasTexto(filas)} devueltas`
+        : r.precision === "aproximado" ? `${filasTexto(filas)}, aproximado`
+          : r.precision === "exacto" ? filasTexto(filas) : r.precision;
+    const temporal = r.operacion.startsWith("CREATE TEMP");
+    if (["UPDATE", "DELETE", "INSERT", "TRUNCATE", "MERGE"].includes(
+      r.operacion) && filas !== 0) marcar(r.linea, "cambio");
+    const efectos = Object.entries(r.efectos || {})
+      .filter(([tabla]) => !r.tabla || sinEsquema(tabla) !== r.tabla)
+      .map(([tabla, valores]) => h("span", { clase: "efecto" },
+        `${sinEsquema(tabla)}: ${cambiosTexto(valores)} por trigger`));
+    anadir(r.linea, h("div", { clase: "anotacion" },
+      h("span", { clase: "filas" }, `${numero(filas)} `,
+        h("small", {}, temporal ? `${filasTexto(filas)} en ${r.tabla}`
+          : etiqueta)),
+      r.nota && !["exacto"].includes(r.precision) && !temporal
+        ? h("span", { clase: "efecto" }, r.nota) : null,
+      efectos));
+  }
+  for (const hallazgo of informe.hallazgos || []) {
+    if (!hallazgo.linea || AVISOS_DE_SCRIPT.has(hallazgo.codigo)
+        || AVISOS_REDUNDANTES.has(hallazgo.codigo)) continue;
+    if (hallazgo.nivel !== "info") {
+      marcar(hallazgo.linea, ["crítico", "alto"].includes(hallazgo.nivel)
+        ? "riesgo" : "cambio");
+    }
+    anadir(hallazgo.linea, h("div", { clase: "anotacion" },
+      h("span", { clase: "hallazgo" }, etiquetaNivel(hallazgo.nivel),
+        textoHallazgo(hallazgo))));
+  }
+  return { notas, peso };
+}
+
+// Líneas que ocupa cada sentencia: desde su inicio hasta antes de la
+// siguiente, sin los comentarios y huecos que preceden a esa siguiente.
+function rangosDeSentencias(informe, lineas) {
+  const inicios = (informe.sentencias || []).map((x) => x.linea)
+    .sort((a, b) => a - b);
+  const rangos = new Map();
+  inicios.forEach((inicio, i) => {
+    let fin = i + 1 < inicios.length ? inicios[i + 1] - 1 : lineas.length;
+    while (fin > inicio) {
+      const texto = lineas[fin - 1].trim();
+      if (texto && !texto.startsWith("--")) break;
+      fin -= 1;
+    }
+    rangos.set(inicio, fin);
+  });
+  return rangos;
+}
+
+function scriptRevisado(s, informe) {
+  const { notas, peso } = anotacionesPorLinea(s, informe);
+  const lineas = s.sql.replace(/\r\n?/g, "\n").split("\n");
+  if (lineas.length && lineas[lineas.length - 1] === "") lineas.pop();
+  const rangos = rangosDeSentencias(informe, lineas);
+  let ocupadaHasta = 0;
+  let resaltadaHasta = 0;
+  let pesoActual = null;
+  const filas = lineas.map((texto, i) => {
+    const n = i + 1;
+    const comentario = texto.trimStart().startsWith("--");
+    const celdas = [
+      h("td", { clase: "n" }, String(n)),
+      h("td", { clase: comentario ? "c comentario-sql" : "c" }, texto || " "),
+    ];
+    const anotaciones = notas.get(n);
+    if (anotaciones) {
+      const fin = Math.max(rangos.get(n) || n, n);
+      pesoActual = peso.get(n) || null;
+      celdas.push(h("td", { clase: pesoActual ? `m m-${pesoActual}` : "m",
+        rowspan: String(fin - n + 1) }, anotaciones));
+      ocupadaHasta = fin;
+      resaltadaHasta = pesoActual ? fin : 0;
+    } else if (n > ocupadaHasta) {
+      celdas.push(h("td", { clase: "m" }));
+    }
+    const clases = [];
+    if (n <= resaltadaHasta && pesoActual) {
+      clases.push("anotada", `anotada-${pesoActual}`);
+    }
+    return h("tr", { clase: clases.join(" ") || null, id: `l${n}` },
+      celdas);
+  });
+  const totalHallazgos = (informe.hallazgos || []).length;
+  return h("section", { clase: "script-revisado",
+    "aria-label": "Script con sus anotaciones" },
+    h("div", { clase: "titulo-script" },
+      h("span", {}, h("b", {}, s.script_nombre),
+        ` ${lineas.length} líneas`),
+      h("span", {}, `${totalHallazgos} ` +
+        (totalHallazgos === 1 ? "aviso" : "avisos") +
+        `, hash ${s.hash.slice(0, 12)}`)),
+    h("div", { clase: "lineas" }, h("table", {}, h("tbody", {}, filas))));
+}
+
+function seccionHallazgosGenerales(informe) {
+  const generales = (informe.hallazgos || []).filter((x) => !x.linea
+    || AVISOS_DE_SCRIPT.has(x.codigo));
+  if (!generales.length) return null;
+  return h("section", {}, h("h2", {}, "Avisos del script completo"),
+    h("ul", { clase: "lista-plana" }, generales.map((x) => h("li", {},
+      etiquetaNivel(x.nivel), " ", x.mensaje))));
+}
+
+function seccionTriggers(informe) {
+  const triggers = (informe.impacto && informe.impacto.triggers) || {};
+  const tablas = Object.keys(triggers);
+  if (!tablas.length) return null;
+  return h("section", {}, h("h2", {}, "Triggers de las tablas modificadas"),
+    h("ul", { clase: "lista-plana" }, tablas.map((tabla) => h("li", {},
+      h("b", {}, tabla), h("ul", {}, triggers[tabla].map((t) =>
+        h("li", { clase: "secundario pequeno" }, t)))))));
+}
+
+function seccionHistorial(s) {
+  const comentario = h("textarea", { rows: "3",
+    "aria-label": "Comentario", placeholder: "Escribe un comentario" });
+  const enviar = botonAccion("Comentar", "", async () => {
+    if (!comentario.value.trim()) return;
+    const actualizada = await api("POST",
+      `/api/solicitudes/${s.id}/comentar`, { comentario: comentario.value });
+    pintarDetalle(actualizada);
+  });
+  return h("section", {}, h("h2", {}, "Historial"),
+    h("ol", { clase: "historial" }, (s.eventos || []).map((e) => {
+      const clase = EVENTOS_BUENOS.has(e.accion) ? "bueno"
+        : EVENTOS_MALOS.has(e.accion) ? "malo" : null;
+      const d = e.detalle || {};
+      return h("li", { clase },
+        h("span", { clase: "quien" }, e.usuario), " ",
+        EVENTOS[e.accion] || e.accion,
+        h("div", { clase: "cuando" }, fecha(e.fecha)),
+        d.comentario ? h("blockquote", {}, d.comentario) : null,
+        d.motivo ? h("blockquote", {}, d.motivo) : null);
+    })),
+    h("div", { clase: "comentar" }, comentario,
+      h("div", {}, enviar)));
+}
+
+// --- Auditoría ------------------------------------------------------------
+
+const EVENTOS_DE_ACCESO = new Set(["acceso", "acceso_fallido"]);
+
+async function verAuditoria() {
+  const datos = await api("GET", "/api/auditoria");
+  const verAccesos = h("input", { type: "checkbox" });
+  const cuerpo = h("tbody");
+  const pintarFilas = () => vaciar(cuerpo, datos.eventos
+    .filter((e) => verAccesos.checked || !EVENTOS_DE_ACCESO.has(e.accion))
+    .map(filaEvento));
+  verAccesos.addEventListener("change", pintarFilas);
+  const integridad = datos.intacta
+    ? h("div", { clase: "integridad intacta" },
+      h("b", {}, "Registro íntegro"),
+      h("span", { clase: "secundario" },
+        `Se han comprobado los ${numero(datos.eventos_verificados)} ` +
+        "eventos: ninguno se ha modificado ni borrado."))
+    : h("div", { clase: "integridad rota" },
+      h("b", {}, "Registro alterado"),
+      h("span", {}, `El evento ${datos.primer_evento_alterado} no coincide ` +
+        "con la cadena de hashes: se ha modificado o borrado algo a mano."));
+  vaciar(principal,
+    h("div", { clase: "cabecera" }, h("div", {},
+      h("h1", {}, "Auditoría"),
+      h("p", {}, "Cada acción queda registrada con el hash de la anterior, " +
+        "así que cualquier cambio posterior se detecta."))),
+    integridad,
+    h("label", { clase: "casilla opcion-tabla" }, verAccesos,
+      h("span", {}, "Mostrar también los inicios de sesión")),
+    h("table", { clase: "tabla tabla-estatica" },
+      h("thead", {}, h("tr", {},
+        h("th", { scope: "col" }, "Fecha"),
+        h("th", { scope: "col" }, "Usuario"),
+        h("th", { scope: "col" }, "Acción"),
+        h("th", { scope: "col" }, "Solicitud"),
+        h("th", { clase: "ocultable", scope: "col" }, "Hash"))),
+      cuerpo));
+  pintarFilas();
+}
+
+function filaEvento(e) {
+  return h("tr", {},
+    h("td", { clase: "secundario" }, fecha(e.fecha)),
+    h("td", {}, e.usuario),
+    h("td", {}, EVENTOS[e.accion] || e.accion,
+      e.detalle && e.detalle.usuario
+        ? h("span", { clase: "secundario" }, ` (${e.detalle.usuario})`)
+        : null),
+    h("td", {}, e.solicitud_id
+      ? h("a", { href: `#/solicitud/${e.solicitud_id}` },
+        `Nº ${e.solicitud_id}`) : "—"),
+    h("td", { clase: "ocultable hash" }, e.hash.slice(0, 16)));
+}
+
+// --- Usuarios -------------------------------------------------------------
+
+async function verUsuarios() {
+  if (estado.usuario.rol !== "admin") {
+    location.hash = "#/";
+    return;
+  }
+  const usuarios = await api("GET", "/api/usuarios");
+  const nombre = h("input", { type: "text", required: true,
+    pattern: "[A-Za-z0-9._\\-]+", autocomplete: "off" });
+  const completo = h("input", { type: "text", autocomplete: "off" });
+  const rol = h("select", {}, Object.entries(NOMBRES_ROL).map(
+    ([valor, texto]) => h("option", { value: valor }, texto)));
+  const clave = h("input", { type: "password", required: true,
+    minlength: "10", autocomplete: "new-password" });
+  const error = h("p", { clase: "error-formulario", hidden: true,
+    role: "alert" });
+  const formulario = h("form", { clase: "formulario" },
+    h("h2", {}, "Añadir usuario"),
+    h("div", { clase: "fila-campos" },
+      h("label", { clase: "campo" }, h("span", {}, "Usuario"), nombre,
+        h("small", {}, "Letras, números, punto, guion o guion bajo.")),
+      h("label", { clase: "campo" }, h("span", {}, "Rol"), rol)),
+    h("div", { clase: "fila-campos" },
+      h("label", { clase: "campo" }, h("span", {}, "Nombre completo"),
+        completo),
+      h("label", { clase: "campo" }, h("span", {}, "Contraseña inicial"),
+        clave, h("small", {}, "Mínimo 10 caracteres."))),
+    error,
+    h("div", { clase: "acciones-formulario" },
+      h("button", { type: "submit", clase: "boton boton-principal" },
+        "Añadir usuario")));
+  formulario.addEventListener("submit", async (evento) => {
+    evento.preventDefault();
+    error.hidden = true;
+    try {
+      await api("POST", "/api/usuarios", {
+        nombre: nombre.value, nombre_completo: completo.value,
+        rol: rol.value, clave: clave.value,
+      });
+      avisar(`Usuario ${nombre.value} añadido.`);
+      await verUsuarios();
+    } catch (e) {
+      if (e.codigo === 401) return;
+      error.textContent = e.message;
+      error.hidden = false;
+    }
+  });
+
+  vaciar(principal,
+    h("div", { clase: "cabecera" }, h("div", {},
+      h("h1", {}, "Usuarios"),
+      h("p", {}, "Los solicitantes envían scripts. Los aprobadores aprueban " +
+        "los de otras personas, ejecutan y deshacen. Los administradores, " +
+        "además, gestionan usuarios."))),
+    h("table", { clase: "tabla tabla-estatica" },
+      h("thead", {}, h("tr", {},
+        h("th", { scope: "col" }, "Usuario"),
+        h("th", { scope: "col" }, "Nombre"),
+        h("th", { scope: "col" }, "Rol"),
+        h("th", { scope: "col" }, "Estado"),
+        h("th", { scope: "col" }, h("span", { hidden: true }, "Acciones")))),
+      h("tbody", {}, usuarios.map((u) => h("tr", {},
+        h("td", {}, h("b", {}, u.nombre)),
+        h("td", {}, u.nombre_completo || "—"),
+        h("td", {}, NOMBRES_ROL[u.rol]),
+        h("td", { clase: u.activo ? "" : "secundario" },
+          u.activo ? "Activo" : "Desactivado"),
+        h("td", {}, u.id === estado.usuario.id ? h("span", {
+          clase: "secundario" }, "Tú") : botonAccion(
+          u.activo ? "Desactivar" : "Activar",
+          u.activo ? "boton-texto" : "boton-texto", async () => {
+            await api("POST", `/api/usuarios/${u.id}/activo`,
+              { activo: !u.activo });
+            await verUsuarios();
+          })))))),
+    h("div", { clase: "columnas" }, formulario));
+}
+
+// --- Inicio ---------------------------------------------------------------
+
+(async () => {
+  try {
+    estado.usuario = await api("GET", "/api/yo");
+    await arrancar();
+  } catch {
+    mostrarAcceso();
+  }
+})();

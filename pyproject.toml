@@ -14,13 +14,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-desarrollo = ["pytest", "flake8"]
+web = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]
+desarrollo = ["pytest", "flake8", "httpx", "fastapi>=0.110",
+              "uvicorn[standard]>=0.29"]
 
 [project.scripts]
 guardian = "guardian.cli:main"
 
 [tool.setuptools]
-packages = ["guardian"]
+packages = ["guardian", "guardian.web"]
+
+[tool.setuptools.package-data]
+"guardian.web" = ["estatico/*", "estatico/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

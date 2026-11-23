@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>SQL Guardian</title>
+  <link rel="preload" href="/estatico/fuentes/schibsted-grotesk.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/estatico/estilos.css">
+  <script src="/estatico/app.js" defer></script>
+</head>
+<body>
+  <a class="saltar" href="#principal">Ir al contenido</a>
+
+  <header class="barra" hidden>
+    <a class="marca" href="#/">SQL Guardian</a>
+    <nav class="menu" aria-label="Secciones">
+      <a href="#/" data-seccion="bandeja">Solicitudes</a>
+      <a href="#/nueva" data-seccion="nueva">Nueva solicitud</a>
+      <a href="#/auditoria" data-seccion="auditoria">Auditoría</a>
+      <a href="#/usuarios" data-seccion="usuarios" data-solo-admin hidden>Usuarios</a>
+    </nav>
+    <div class="cuenta">
+      <span class="cuenta-nombre"></span>
+      <button type="button" class="boton boton-texto" id="salir">Cerrar sesión</button>
+    </div>
+  </header>
+
+  <main id="principal" tabindex="-1"></main>
+
+  <div class="aviso" role="status" aria-live="polite" hidden></div>
+
+  <noscript><p class="sin-js">SQL Guardian necesita JavaScript.</p></noscript>
+</body>
+</html>

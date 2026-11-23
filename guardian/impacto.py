@@ -169,6 +169,22 @@ def hallazgos_de_esquema(sentencias, tablas):
     return hallazgos
 
 
+TIEMPO_CONEXION = 10
+
+
+def conectar(dsn, **opciones):
+    """Abre una conexión con un tiempo máximo de espera al conectar.
+
+    Sin él, un servidor caído puede tener la petición colgada minutos. Si
+    la cadena ya trae `connect_timeout`, se respeta.
+    """
+    from psycopg.conninfo import conninfo_to_dict
+
+    if "connect_timeout" not in conninfo_to_dict(dsn):
+        opciones.setdefault("connect_timeout", TIEMPO_CONEXION)
+    return psycopg.connect(dsn, **opciones)
+
+
 def preparar_transaccion(conexion, statement_timeout, lock_timeout):
     with conexion.cursor() as cur:
         cur.execute("SELECT set_config('statement_timeout', %s, true), "
@@ -367,7 +383,7 @@ def hallazgos_de_simulacion(resultados):
 
 def calcular(dsn, sentencias, modo="conteo", **tiempos):
     """Conecta, lee el esquema, calcula el impacto y hace ROLLBACK."""
-    with psycopg.connect(dsn, autocommit=False) as conexion:
+    with conectar(dsn, autocommit=False) as conexion:
         servidor = conexion.info.parameter_status("server_version") or ""
         nombres = tablas_permanentes_escritas(sentencias)
         tablas = leer_tablas(conexion, nombres)

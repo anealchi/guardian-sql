@@ -1,0 +1,27 @@
+# Configuración de `guardian web`. Copia este archivo como guardian.toml
+# (que git ignora) y ajústalo. Las cadenas de conexión no salen de aquí:
+# ni se guardan en la base de datos de la aplicación ni llegan al navegador.
+
+[web]
+# Base de datos SQLite de la aplicación (usuarios, solicitudes, auditoría).
+# Relativa a este archivo.
+base_datos = "guardian-web.db"
+# Duración de la sesión, en minutos.
+minutos_sesion = 480
+
+[conexiones.staging]
+dsn = "postgresql://guardian@staging.interno:5432/mantenimiento"
+# true: el análisis ejecuta el script y lo deshace (números exactos, pero
+# bloquea filas mientras dura). false: solo cuenta filas.
+simular = true
+# Tablas cuyos cambios por trigger no importan (se suman a las que indique
+# cada solicitud).
+ignorar_tablas = ["parte_trabajo_tarea_log"]
+
+[conexiones.produccion]
+# Mejor no escribir la contraseña aquí: se lee de esta variable de entorno
+# (o usa un archivo .pgpass).
+dsn_env = "GUARDIAN_DSN_PRODUCCION"
+simular = false
+statement_timeout = "60s"
+lock_timeout = "3s"

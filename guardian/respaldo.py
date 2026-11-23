@@ -62,6 +62,12 @@ CREATE TABLE IF NOT EXISTS {ESQUEMA}.filas (
 
 CREATE INDEX IF NOT EXISTS filas_sentencia
     ON {ESQUEMA}.filas (ejecucion, sentencia);
+
+-- Origen de la ejecución cuando viene de la aplicación web (fase 3).
+ALTER TABLE {ESQUEMA}.ejecuciones
+    ADD COLUMN IF NOT EXISTS solicitud text,
+    ADD COLUMN IF NOT EXISTS solicitado_por text,
+    ADD COLUMN IF NOT EXISTS aprobado_por text;
 """
 
 

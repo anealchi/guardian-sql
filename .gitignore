@@ -23,6 +23,12 @@ htmlcov/
 !.env.ejemplo
 .pgpass
 
+# Configuración y datos de `guardian web` (guardian.ejemplo.toml sí se sube)
+guardian.toml
+*.db
+*.db-wal
+*.db-shm
+
 # Salidas generadas por guardian
 informe*.md
 deshacer_*.sql

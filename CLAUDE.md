@@ -7,7 +7,7 @@ Este archivo sirve de guía a Claude Code para trabajar con este repositorio.
 SQL Guardian (`guardian/`) revisa scripts SQL de PostgreSQL antes de
 ejecutarlos en producción. El código, los comentarios, los mensajes y la
 documentación están en **español**; el código nuevo debe seguir igual. El
-plan completo (fases F1–F5) está en el README; están hechas la F1 y la F2.
+plan completo (fases F1–F5) está en el README; están hechas F1, F2 y F3.
 
 ## Comandos
 
@@ -18,6 +18,8 @@ guardian analizar script.sql [--dsn ...] [--simular] [-m informe.md]
 guardian ejecutar script.sql [--ignorar-tabla T] [--confirmar]
 guardian deshacer ID [--solo-sql] [--confirmar]
 guardian historial
+guardian web [--config guardian.toml]   # aplicación web (F3)
+guardian usuario crear NOMBRE --rol admin
 python herramientas/pg_local.py iniciar|parar|dsn
 pytest
 flake8 guardian tests herramientas
@@ -68,12 +70,39 @@ Todo debe pasar flake8 con la configuración por defecto (79 caracteres).
   (`pedir_confirmacion`); en Windows, `< NUL` cuenta como terminal, pero
   `input()` recibe EOF y se hace ROLLBACK.
 
+### Aplicación web (`guardian/web/`)
+
+- `config.py`: lee `guardian.toml` (ver `guardian.ejemplo.toml`). Los DSN
+  nunca salen del servidor: `Conexion.publica()` es lo único que ve el
+  navegador.
+- `almacen.py`: SQLite (usuarios, sesiones, solicitudes, eventos). Cada
+  operación abre conexión con `BEGIN IMMEDIATE` (`transaccion()`); el
+  esquema se crea fuera porque `executescript` confirma por su cuenta. Los
+  eventos forman una cadena de hashes (`verificar_auditoria`) y hay
+  triggers que impiden UPDATE/DELETE sobre ellos.
+- `servicio.py`: reglas del flujo, sin HTTP (ver el diagrama del
+  docstring). Las transiciones se hacen con `UPDATE ... WHERE estado IN
+  (...)` para que dos peticiones a la vez no ejecuten dos veces. Al
+  ejecutar, `confirmar()` compara las filas reales con `filas_aprobadas()`.
+- `app.py`: FastAPI. Middleware que exige `X-Guardian: 1` en lo que no es
+  GET y añade CSP estricta (por eso `estatico/` no puede tener scripts ni
+  estilos en línea).
+- `estatico/`: HTML/CSS/JS sin compilación. `app.js` construye todo con
+  `h()` y `textContent`: no usar `innerHTML` con datos. En el detalle, cada
+  nota del margen ocupa con `rowspan` las líneas de su sentencia
+  (`rangosDeSentencias`).
+- Las conexiones a PostgreSQL pasan por `impacto.conectar()`, que pone
+  `connect_timeout=10` si la cadena no lo trae (sin él, un servidor caído
+  deja la petición colgada minutos en Windows).
+
 ## Pruebas
 
 - `tests/datos/esquema_prueba.sql`: esquema sintético de mantenimiento
   (parte_trabajo, orden_trabajo_tarea, tarea_planificacion...) con dos
   triggers y datos inventados con duplicados. Los números esperados de las
   pruebas dependen de esos datos: si se cambian, revisar `test_impacto.py`.
+- `test_web.py` usa el `TestClient` de FastAPI con una configuración que
+  apunta a la base de pruebas; baja `ITERACIONES` de PBKDF2 para ir rápido.
 - `test_impacto.py` usa los scripts reales de `../operaciones-sql-produccion`
   (se salta si no están) y comprueba que ningún modo cambia la base
   (huella md5 antes/después).

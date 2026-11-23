@@ -28,7 +28,7 @@ from pglast.enums import OnConflictAction
 from guardian.analisis import CRITICO, analizar
 from guardian.esquema import leer_tablas
 from guardian.impacto import (
-    FUERA_DE_TRANSACCION, diferencia, estadisticas, mensaje_error,
+    FUERA_DE_TRANSACCION, conectar, diferencia, estadisticas, mensaje_error,
     origen_de_modificacion, preparar_transaccion, prefijo_with,
 )
 from guardian.respaldo import (
@@ -263,11 +263,13 @@ def _resumen_sin_respaldo(ejecucion):
 def ejecutar(dsn, nombre_script, fuente, sentencias, confirmar,
              forzar=False, permitir_indirectos=False, ignorar=(),
              statement_timeout="60s", lock_timeout="3s",
-             tiempo_confirmacion=120):
+             tiempo_confirmacion=120, origen=None):
     """Ejecuta el script con respaldo. Devuelve una `Ejecucion`.
 
     `confirmar(ejecucion)` se llama con la transacción abierta y decide si
     se hace COMMIT. Lanza `ErrorEjecucion` si una sentencia falla.
+    `origen` (opcional) = {"solicitud", "solicitado_por", "aprobado_por"},
+    que se guarda en `guardian_backup.ejecuciones`.
     """
     ejecucion = Ejecucion(id=nuevo_id(), script=nombre_script)
     ejecucion.hallazgos = analizar(sentencias)
@@ -275,7 +277,7 @@ def ejecutar(dsn, nombre_script, fuente, sentencias, confirmar,
     ignorar = set(ignorar)
     temporales = tablas_temporales(sentencias)
 
-    with psycopg.connect(dsn, autocommit=False) as conexion:
+    with conectar(dsn, autocommit=False) as conexion:
         tablas = leer_tablas(conexion, tablas_permanentes_escritas(
             sentencias))
         conexion.rollback()
@@ -296,12 +298,15 @@ def ejecutar(dsn, nombre_script, fuente, sentencias, confirmar,
                 "SELECT set_config('idle_in_transaction_session_timeout', "
                 "%s, true)", (f"{int(tiempo_confirmacion) + 30}s",))
             conexion.execute(SQL_CREAR)
+            origen = origen or {}
             conexion.execute(
-                f"INSERT INTO {ESQUEMA}.ejecuciones (id, script, hash, sql) "
-                f"VALUES (%s, %s, %s, %s)",
+                f"INSERT INTO {ESQUEMA}.ejecuciones (id, script, hash, sql, "
+                f"solicitud, solicitado_por, aprobado_por) "
+                f"VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (ejecucion.id, nombre_script,
                  hashlib.sha256(fuente.encode("utf-8")).hexdigest(),
-                 fuente))
+                 fuente, origen.get("solicitud"),
+                 origen.get("solicitado_por"), origen.get("aprobado_por")))
             _ejecutar_sentencias(conexion, ejecucion, sentencias, tablas,
                                  temporales, ignorar, forzar)
 

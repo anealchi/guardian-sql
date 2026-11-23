@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 import psycopg
 
 from guardian.impacto import (
-    diferencia, estadisticas, mensaje_error, preparar_transaccion,
+    conectar, diferencia, estadisticas, mensaje_error, preparar_transaccion,
 )
 from guardian.respaldo import ESQUEMA, sql_restaurar, validar_id
 
@@ -103,7 +103,7 @@ def _leer_ejecucion(conexion, ejecucion_id):
 def script_deshacer(dsn, ejecucion_id):
     """SQL completo para deshacer a mano (termina con ROLLBACK)."""
     validar_id(ejecucion_id)
-    with psycopg.connect(dsn) as conexion:
+    with conectar(dsn) as conexion:
         datos = _leer_ejecucion(conexion, ejecucion_id)
         conexion.rollback()
     partes = [f"-- Deshacer la ejecución {datos.id} ({datos.script}, "
@@ -127,7 +127,7 @@ def deshacer(dsn, ejecucion_id, confirmar, statement_timeout="60s",
     """Deshace una ejecución. `confirmar(resultado)` decide el COMMIT."""
     validar_id(ejecucion_id)
     resultado = None
-    with psycopg.connect(dsn, autocommit=False) as conexion:
+    with conectar(dsn, autocommit=False) as conexion:
         try:
             preparar_transaccion(conexion, statement_timeout, lock_timeout)
             conexion.execute(
@@ -171,7 +171,7 @@ def deshacer(dsn, ejecucion_id, confirmar, statement_timeout="60s",
 
 def historial(dsn, limite=20):
     """Últimas ejecuciones registradas (lista de diccionarios)."""
-    with psycopg.connect(dsn) as conexion:
+    with conectar(dsn) as conexion:
         existe = conexion.execute(
             "SELECT to_regclass(%s) IS NOT NULL",
             (f"{ESQUEMA}.ejecuciones",)).fetchone()[0]

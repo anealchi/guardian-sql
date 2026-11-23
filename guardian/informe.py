@@ -218,3 +218,44 @@ def texto_historial(ejecuciones):
             f"{e['usuario'][:12]:<12} {e['estado']:<9} {e['filas']:>6}  "
             f"{e['script']}{aviso}")
     return "\n".join(lineas)
+
+
+def _nivel_veredicto(hallazgos):
+    niveles = {h.nivel for h in hallazgos}
+    if CRITICO in niveles:
+        return "bloqueado"
+    if ALTO in niveles:
+        return "revisar"
+    return "ok"
+
+
+def informe_json(sentencias, hallazgos, impacto=None, error=None):
+    """Informe de `analizar` como diccionario serializable en JSON."""
+    resultados = []
+    if impacto is not None:
+        for r in impacto.resultados:
+            resultados.append({
+                "indice": r.indice, "linea": r.linea,
+                "operacion": r.operacion, "tabla": r.tabla,
+                "filas": r.filas, "precision": r.precision, "nota": r.nota,
+                "efectos": {t: list(v) for t, v in r.efectos.items()}})
+    previstas = sum(r["filas"] or 0 for r in resultados
+                    if r["operacion"] in ("UPDATE", "DELETE", "INSERT"))
+    return {
+        "veredicto": {"nivel": _nivel_veredicto(hallazgos),
+                      "texto": veredicto(hallazgos)},
+        "tablas_modificadas": tablas_permanentes_escritas(sentencias),
+        "sentencias": [{"indice": s.indice, "linea": s.linea,
+                        "operacion": s.operacion,
+                        "tablas": s.tablas_escritas} for s in sentencias],
+        "hallazgos": [{"nivel": h.nivel, "codigo": h.codigo,
+                       "mensaje": h.mensaje, "linea": h.linea}
+                      for h in hallazgos],
+        "impacto": None if impacto is None else {
+            "modo": impacto.modo, "servidor": impacto.servidor,
+            "resultados": resultados,
+            "triggers": {t.nombre: [d.describir() for d in t.triggers]
+                         for t in impacto.tablas.values() if t.triggers}},
+        "filas_previstas": previstas if impacto is not None else None,
+        "error": error,
+    }
