@@ -1,0 +1,36 @@
+# Entorno virtual
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Pruebas y cobertura
+.pytest_cache/
+.coverage
+htmlcov/
+
+# PostgreSQL portátil y sus datos (herramientas/pg_local.py)
+.pg/
+
+# Credenciales: GUARDIAN_DSN puede llevar la contraseña de la base de datos
+.env
+.env.*
+!.env.ejemplo
+.pgpass
+
+# Salidas generadas por guardian
+informe*.md
+deshacer_*.sql
+
+# Editores y sistema operativo
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

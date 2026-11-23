@@ -1,0 +1,7 @@
+# Parser real de PostgreSQL (libpg_query)
+pglast>=8
+# Conexión a PostgreSQL
+psycopg[binary]>=3.2
+# Desarrollo
+pytest
+flake8

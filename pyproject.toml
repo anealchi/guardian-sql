@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sql-guardian"
+version = "0.1.0"
+description = "Revisa scripts SQL de PostgreSQL antes de ejecutarlos en producción."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pglast>=8",
+    "psycopg[binary]>=3.2",
+]
+
+[project.optional-dependencies]
+desarrollo = ["pytest", "flake8"]
+
+[project.scripts]
+guardian = "guardian.cli:main"
+
+[tool.setuptools]
+packages = ["guardian"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
