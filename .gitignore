@@ -27,6 +27,10 @@ htmlcov/
 informe*.md
 deshacer_*.sql
 
+# Skills de Claude Code instaladas con `npx skills`: solo se versiona
+# skills-lock.json; se reinstalan con `npx skills experimental_install`.
+.claude/skills/
+
 # Editores y sistema operativo
 .vscode/
 .idea/
