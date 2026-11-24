@@ -95,7 +95,10 @@ Todo debe pasar flake8 con la configuración por defecto (79 caracteres).
 - `estatico/`: HTML/CSS/JS sin compilación. `app.js` construye todo con
   `h()` y `textContent`: no usar `innerHTML` con datos. En el detalle, cada
   nota del margen ocupa con `rowspan` las líneas de su sentencia
-  (`rangosDeSentencias`).
+  (`rangosDeSentencias`). `estilos.css` solo usa sus escalas (`--e-*`
+  espaciado, `--t-*` tamaños, pesos 400/500/600/700, `--radio` y
+  `--radio-chico`); las tablas van dentro de `.tabla-contenedor` para que
+  la página no se desplace en horizontal en móvil (comprobado a 390 px).
 - Las conexiones a PostgreSQL pasan por `impacto.conectar()`, que pone
   `connect_timeout=10` si la cadena no lo trae (sin él, un servidor caído
   deja la petición colgada minutos en Windows).

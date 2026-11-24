@@ -155,6 +155,9 @@ def test_flujo_completo(app, dsn, script_real):
     acciones = [e["accion"] for e in r.json()["eventos"]]
     assert acciones == ["crear", "aprobar", "ejecucion_iniciada",
                         "ejecucion_ejecutada", "deshacer"]
+    # Ningún evento del flujo (p. ej. filas_aprobadas, con claves enteras)
+    # debe romper la cadena de hashes.
+    assert ana.get("/api/auditoria").json()["intacta"]
 
 
 def test_si_cambian_los_datos_no_se_aplica(app, dsn, script_real):
@@ -314,6 +317,16 @@ def test_usuarios_solo_admin(app):
     eva = cliente(app, "eva")
     post(admin, f"/api/usuarios/{eva_id}/activo", activo=False)
     assert eva.get("/api/yo").status_code == 401
+
+
+def test_detalle_con_claves_enteras_no_rompe_la_cadena(app):
+    # filas_aprobadas usa el índice de sentencia como clave: con índices de
+    # dos cifras, el orden de las claves cambia al pasar por JSON.
+    almacen = app.state.almacen
+    with almacen.transaccion() as db:
+        almacen.registrar(db, "luis", "aprobar", None,
+                          {"filas_aprobadas": {9: 1, 10: 2, 11: 0}})
+    assert almacen.verificar_auditoria() == (True, 1)
 
 
 def test_cadena_de_auditoria(app, tmp_path, script_real):

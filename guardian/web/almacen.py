@@ -250,7 +250,11 @@ class Almacen:
     def registrar(self, db, usuario, accion, solicitud_id=None,
                   detalle=None):
         """Añade un evento a la cadena (dentro de la transacción `db`)."""
-        detalle = detalle or {}
+        # El hash se calcula sobre el detalle tal y como se leerá después.
+        # JSON convierte las claves enteras en texto y sort_keys las ordena
+        # entonces de otra forma ({9, 10} frente a {"10", "9"}): sin esto,
+        # la verificación lo tomaría por una manipulación.
+        detalle = json.loads(json.dumps(detalle or {}, ensure_ascii=False))
         anterior = db.execute(
             "SELECT hash FROM eventos ORDER BY id DESC LIMIT 1").fetchone()
         anterior = anterior[0] if anterior else ""

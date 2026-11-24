@@ -221,8 +221,11 @@ async function navegar() {
     const coincide = hash.match(patron);
     if (!coincide) continue;
     document.querySelectorAll(".menu a").forEach((a) => {
-      if (a.dataset.seccion === seccion) a.setAttribute("aria-current", "page");
-      else a.removeAttribute("aria-current");
+      if (a.dataset.seccion === seccion) {
+        a.setAttribute("aria-current", "page");
+        // En móvil el menú se desplaza en horizontal: que se vea la actual.
+        a.scrollIntoView({ block: "nearest", inline: "nearest" });
+      } else a.removeAttribute("aria-current");
     });
     vaciar(principal, h("p", { clase: "cargando" }, "Cargando…"));
     try {
@@ -257,7 +260,7 @@ function mostrarAcceso() {
   const formulario = h("form", { clase: "formulario" },
     h("label", { clase: "campo" }, h("span", {}, "Usuario"), nombre),
     h("label", { clase: "campo" }, h("span", {}, "Contraseña"), clave),
-    error, h("div", { clase: "acciones-formulario" }, boton));
+    error, boton);
   formulario.addEventListener("submit", async (evento) => {
     evento.preventDefault();
     boton.disabled = true;
@@ -273,12 +276,22 @@ function mostrarAcceso() {
       clave.select();
     } finally { boton.disabled = false; }
   });
+  const logo = document.querySelector(".marca svg").cloneNode(true);
   vaciar(principal, h("section", { clase: "acceso" },
-    h("div", {},
-      h("h1", {}, "SQL Guardian"),
-      h("p", { clase: "secundario" },
-        "Revisa, aprueba y ejecuta scripts de producción con respaldo.")),
-    formulario));
+    h("div", { clase: "acceso-presentacion" },
+      h("p", { clase: "acceso-marca" }, logo, "SQL Guardian"),
+      h("h1", {}, "Ningún script llega a producción sin que otra " +
+        "persona vea lo que va a cambiar."),
+      h("ol", { clase: "acceso-pasos" },
+        h("li", {}, h("span", {}, h("b", {}, "Envías el script."),
+          " Se analiza contra la base de datos: filas, triggers y riesgos.")),
+        h("li", {}, h("span", {}, h("b", {}, "Otra persona lo aprueba"),
+          " con esos números de filas exactos.")),
+        h("li", {}, h("span", {}, h("b", {}, "Se ejecuta con respaldo."),
+          " Si las filas no coinciden, no se aplica nada; si algo sale " +
+          "mal, se deshace.")))),
+    h("div", { clase: "acceso-tarjeta" },
+      h("h2", {}, "Iniciar sesión"), formulario)));
   nombre.focus();
 }
 
@@ -286,8 +299,9 @@ async function arrancar() {
   const barra = document.querySelector(".barra");
   barra.hidden = false;
   barra.querySelector(".cuenta-nombre").textContent =
-    `${estado.usuario.nombre_completo || estado.usuario.nombre} ` +
-    `(${NOMBRES_ROL[estado.usuario.rol]})`;
+    estado.usuario.nombre_completo || estado.usuario.nombre;
+  barra.querySelector(".cuenta-rol").textContent =
+    NOMBRES_ROL[estado.usuario.rol];
   barra.querySelector("[data-solo-admin]").hidden =
     estado.usuario.rol !== "admin";
   estado.conexiones = await api("GET", "/api/conexiones");
@@ -371,35 +385,38 @@ function tablaSolicitudes(solicitudes) {
     const enlace = h("a", { clase: "titulo-solicitud",
       href: `#/solicitud/${s.id}` }, s.titulo);
     const fila = h("tr", {},
-      h("td", { clase: "num secundario" }, String(s.id)),
-      h("td", {}, enlace, h("div", { clase: "secundario pequeno" },
-        s.script_nombre)),
-      h("td", { clase: "ocultable" }, s.conexion),
-      h("td", {}, etiquetaEstado(s.estado)),
-      h("td", { clase: "ocultable" }, s.veredicto
+      h("td", { clase: "num secundario c-id" }, String(s.id)),
+      h("td", { clase: "c-titulo" }, enlace,
+        h("div", { clase: "secundario pequeno" },
+          `${s.script_nombre} · ${s.conexion}`)),
+      h("td", { clase: "c-estado" }, etiquetaEstado(s.estado)),
+      h("td", { clase: "c-riesgo" }, s.veredicto
         ? h("span", { clase: `nivel nivel-${s.veredicto === "bloqueado"
           ? "critico" : s.veredicto === "revisar" ? "alto" : "ok"}` },
         NOMBRES_VEREDICTO[s.veredicto]) : "—"),
-      h("td", { clase: "num" }, numero(s.filas_previstas)),
-      h("td", { clase: "ocultable" }, s.solicitante),
-      h("td", { clase: "ocultable secundario" }, fecha(s.actualizada)));
+      h("td", { clase: "num c-filas" }, numero(s.filas_previstas),
+        s.filas_previstas === null ? null : h("span", { clase: "solo-movil" },
+          s.filas_previstas === 1 ? " fila prevista" : " filas previstas")),
+      h("td", { clase: "ocultable c-quien" }, s.solicitante),
+      h("td", { clase: "ocultable secundario c-fecha" },
+        fecha(s.actualizada)));
     fila.addEventListener("click", (evento) => {
       if (evento.target.closest("a")) return;
       location.hash = `#/solicitud/${s.id}`;
     });
     return fila;
   });
-  return h("table", { clase: "tabla" },
-    h("thead", {}, h("tr", {},
-      h("th", { clase: "num", scope: "col" }, "Nº"),
-      h("th", { scope: "col" }, "Solicitud"),
-      h("th", { clase: "ocultable", scope: "col" }, "Conexión"),
-      h("th", { scope: "col" }, "Estado"),
-      h("th", { clase: "ocultable", scope: "col" }, "Riesgo"),
-      h("th", { clase: "num", scope: "col" }, "Filas previstas"),
-      h("th", { clase: "ocultable", scope: "col" }, "Pedida por"),
-      h("th", { clase: "ocultable", scope: "col" }, "Último cambio"))),
-    h("tbody", {}, filas));
+  return h("div", { clase: "tabla-contenedor" },
+    h("table", { clase: "tabla tabla-solicitudes" },
+      h("thead", {}, h("tr", {},
+        h("th", { clase: "num", scope: "col" }, "Nº"),
+        h("th", { scope: "col" }, "Solicitud"),
+        h("th", { scope: "col" }, "Estado"),
+        h("th", { scope: "col" }, "Riesgo"),
+        h("th", { clase: "num", scope: "col" }, "Filas previstas"),
+        h("th", { clase: "ocultable", scope: "col" }, "Pedida por"),
+        h("th", { clase: "ocultable", scope: "col" }, "Último cambio"))),
+      h("tbody", {}, filas)));
 }
 
 // --- Nueva solicitud ------------------------------------------------------
@@ -455,8 +472,9 @@ function verNueva() {
         conexion, notaConexion)),
     h("label", { clase: "campo" }, h("span", {}, "Motivo"), motivo),
     h("div", { clase: "campo" },
-      h("label", { for: "sql-nuevo" }, h("span", {}, "Script")),
-      archivo,
+      h("label", { for: "sql-nuevo" }, "Script"),
+      h("div", { clase: "selector-archivo" }, archivo,
+        h("small", {}, "o pégalo debajo.")),
       sql),
     h("label", { clase: "campo" },
       h("span", {}, "Tablas cuyos cambios indirectos no importan"),
@@ -473,7 +491,7 @@ function verNueva() {
         "lo verá marcado."))),
     error,
     h("div", { clase: "acciones-formulario" }, enviar,
-      h("a", { href: "#/" }, "Cancelar")));
+      h("a", { clase: "boton boton-texto", href: "#/" }, "Cancelar")));
   sql.id = "sql-nuevo";
 
   formulario.addEventListener("submit", async (evento) => {
@@ -632,15 +650,18 @@ function pintarDetalle(s) {
     `Se ignoran los cambios indirectos en ${opciones.ignorar_tablas.join(", ")}.`);
 
   vaciar(principal,
-    h("p", {}, h("a", { href: "#/" }, "Solicitudes")),
+    h("nav", { clase: "migas", "aria-label": "Ruta" },
+      h("a", { href: "#/" }, "← Solicitudes")),
+    // Fuera de .detalle-cabecera: sticky solo funciona dentro de su
+    // contenedor, y así se queda arriba mientras se recorre el script.
+    h("div", { clase: "cabecera cabecera-detalle" },
+      h("div", {},
+        h("h1", {}, s.titulo),
+        h("div", { clase: "linea-meta" },
+          h("span", {}, `Nº ${s.id}`), etiquetaEstado(s.estado),
+          h("span", {}, `Enviada ${fecha(s.creada)}`))),
+      h("div", { clase: "acciones" }, accionesDisponibles(s))),
     h("div", { clase: "detalle-cabecera" },
-      h("div", { clase: "cabecera" },
-        h("div", {},
-          h("h1", {}, s.titulo),
-          h("div", { clase: "linea-meta" },
-            h("span", {}, `Nº ${s.id}`), etiquetaEstado(s.estado),
-            h("span", {}, `Enviada ${fecha(s.creada)}`))),
-        h("div", { clase: "acciones" }, accionesDisponibles(s))),
       h("div", { clase: "linea-meta" }, meta.map(([etiqueta, valor]) =>
         h("span", {}, `${etiqueta}: `, h("b", {}, valor)))),
       s.motivo ? h("p", { clase: "motivo" }, s.motivo) : null),
@@ -651,7 +672,8 @@ function pintarDetalle(s) {
       h("p", {}, informe.error),
       h("p", { clase: "secundario" }, "Sin impacto no se puede aprobar. " +
         "Usa Volver a analizar cuando la base de datos responda.")) : null,
-    avisosOpciones.length ? h("div", { clase: "nota-bloque alto" },
+    avisosOpciones.length ? h("div", { clase: "nota-bloque" +
+      (opciones.forzar || opciones.permitir_indirectos ? " alto" : "") },
       h("h3", {}, "Opciones de ejecución"),
       h("ul", {}, avisosOpciones.map((t) => h("li", {}, t)))) : null,
     scriptRevisado(s, informe),
@@ -719,11 +741,22 @@ function bloqueResultado(s) {
       `respaldadas` + (s.ejecucion_id ? ` en la ejecución ${s.ejecucion_id}.`
         : ".")));
   }
+  if (r.bloqueos && r.bloqueos.length && s.estado !== "ejecutada") {
+    partes.push(h("p", {}, "No se pueden respaldar:"),
+      h("ul", {}, r.bloqueos.map((b) => h("li", {},
+        b.linea ? `Línea ${b.linea}: ${b.mensaje}` : b.mensaje))));
+  }
   const sinRespaldo = (r.pasos || []).filter((p) => p.forzada
     || Object.keys(p.indirectos || {}).length);
   if (sinRespaldo.length) {
-    partes.push(h("p", {}, "Sin respaldo (no se deshacen): ",
-      sinRespaldo.map((p) => `línea ${p.linea}`).join(", "), "."));
+    partes.push(h("p", {}, s.estado === "ejecutada"
+      ? "Cambios sin respaldo, que Deshacer no revierte:"
+      : "Cambios que el respaldo no cubre:"),
+    h("ul", {}, sinRespaldo.map((p) => h("li", {}, `Línea ${p.linea}: ` +
+      (p.forzada ? `${p.operacion} ejecutada sin respaldo`
+        : Object.entries(p.indirectos).map(([tabla, valores]) =>
+          `${sinEsquema(tabla)}, ${cambiosTexto(valores)}`).join("; ")) +
+      "."))));
   }
   if (r.deshacer) {
     const d = r.deshacer;
@@ -957,14 +990,15 @@ async function verAuditoria() {
     integridad,
     h("label", { clase: "casilla opcion-tabla" }, verAccesos,
       h("span", {}, "Mostrar también los inicios de sesión")),
-    h("table", { clase: "tabla tabla-estatica" },
-      h("thead", {}, h("tr", {},
-        h("th", { scope: "col" }, "Fecha"),
-        h("th", { scope: "col" }, "Usuario"),
-        h("th", { scope: "col" }, "Acción"),
-        h("th", { scope: "col" }, "Solicitud"),
-        h("th", { clase: "ocultable", scope: "col" }, "Hash"))),
-      cuerpo));
+    h("div", { clase: "tabla-contenedor" },
+      h("table", { clase: "tabla tabla-estatica" },
+        h("thead", {}, h("tr", {},
+          h("th", { scope: "col" }, "Fecha"),
+          h("th", { scope: "col" }, "Usuario"),
+          h("th", { scope: "col" }, "Acción"),
+          h("th", { scope: "col" }, "Solicitud"),
+          h("th", { clase: "ocultable", scope: "col" }, "Hash"))),
+        cuerpo)));
   pintarFilas();
 }
 
@@ -1037,27 +1071,28 @@ async function verUsuarios() {
       h("p", {}, "Los solicitantes envían scripts. Los aprobadores aprueban " +
         "los de otras personas, ejecutan y deshacen. Los administradores, " +
         "además, gestionan usuarios."))),
-    h("table", { clase: "tabla tabla-estatica" },
-      h("thead", {}, h("tr", {},
-        h("th", { scope: "col" }, "Usuario"),
-        h("th", { scope: "col" }, "Nombre"),
-        h("th", { scope: "col" }, "Rol"),
-        h("th", { scope: "col" }, "Estado"),
-        h("th", { scope: "col" }, h("span", { hidden: true }, "Acciones")))),
-      h("tbody", {}, usuarios.map((u) => h("tr", {},
-        h("td", {}, h("b", {}, u.nombre)),
-        h("td", {}, u.nombre_completo || "—"),
-        h("td", {}, NOMBRES_ROL[u.rol]),
-        h("td", { clase: u.activo ? "" : "secundario" },
-          u.activo ? "Activo" : "Desactivado"),
-        h("td", {}, u.id === estado.usuario.id ? h("span", {
-          clase: "secundario" }, "Tú") : botonAccion(
-          u.activo ? "Desactivar" : "Activar",
-          u.activo ? "boton-texto" : "boton-texto", async () => {
-            await api("POST", `/api/usuarios/${u.id}/activo`,
-              { activo: !u.activo });
-            await verUsuarios();
-          })))))),
+    h("div", { clase: "tabla-contenedor" },
+      h("table", { clase: "tabla tabla-estatica" },
+        h("thead", {}, h("tr", {},
+          h("th", { scope: "col" }, "Usuario"),
+          h("th", { scope: "col" }, "Nombre"),
+          h("th", { scope: "col" }, "Rol"),
+          h("th", { scope: "col" }, "Estado"),
+          h("th", { scope: "col" },
+            h("span", { clase: "solo-lector" }, "Acciones")))),
+        h("tbody", {}, usuarios.map((u) => h("tr", {},
+          h("td", {}, h("b", {}, u.nombre)),
+          h("td", {}, u.nombre_completo || "—"),
+          h("td", {}, h("span", { clase: "rol" }, NOMBRES_ROL[u.rol])),
+          h("td", { clase: u.activo ? "" : "secundario" },
+            u.activo ? "Activo" : "Desactivado"),
+          h("td", {}, u.id === estado.usuario.id ? h("span", {
+            clase: "secundario" }, "Tú") : botonAccion(
+            u.activo ? "Desactivar" : "Activar", "boton-texto", async () => {
+              await api("POST", `/api/usuarios/${u.id}/activo`,
+                { activo: !u.activo });
+              await verUsuarios();
+            }))))))),
     h("div", { clase: "columnas" }, formulario));
 }
 

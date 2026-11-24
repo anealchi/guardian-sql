@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>SQL Guardian</title>
+  <link rel="icon" href="/estatico/favicon.svg" type="image/svg+xml">
   <link rel="preload" href="/estatico/fuentes/schibsted-grotesk.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/estatico/estilos.css">
   <script src="/estatico/app.js" defer></script>
@@ -13,7 +14,13 @@
   <a class="saltar" href="#principal">Ir al contenido</a>
 
   <header class="barra" hidden>
-    <a class="marca" href="#/">SQL Guardian</a>
+    <a class="marca" href="#/">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
+        <path class="escudo" d="M12 2.2 4.5 5v5.8c0 4.7 3.1 8.8 7.5 10.4 4.4-1.6 7.5-5.7 7.5-10.4V5L12 2.2Z"/>
+        <path class="marca-check" d="m8.6 12.1 2.4 2.4 4.4-4.8"/>
+      </svg>
+      SQL Guardian
+    </a>
     <nav class="menu" aria-label="Secciones">
       <a href="#/" data-seccion="bandeja">Solicitudes</a>
       <a href="#/nueva" data-seccion="nueva">Nueva solicitud</a>
@@ -22,6 +29,7 @@
     </nav>
     <div class="cuenta">
       <span class="cuenta-nombre"></span>
+      <span class="cuenta-rol rol"></span>
       <button type="button" class="boton boton-texto" id="salir">Cerrar sesión</button>
     </div>
   </header>

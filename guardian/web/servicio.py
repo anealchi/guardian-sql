@@ -314,11 +314,26 @@ class Servicio:
                 estado = "ejecutada"
             else:
                 estado = "no_aplicada"
+                # Los motivos de `ejecucion` hablan de opciones de la CLI;
+                # aquí se explican con las casillas del formulario.
                 if discrepancias:
                     resultado["motivo"] = (
                         "El número de filas no coincide con el aprobado: "
                         "se ha hecho ROLLBACK. Reanaliza y vuelve a "
                         "aprobar.")
+                elif ejecucion.bloqueos and not opciones.get("forzar"):
+                    resultado["motivo"] = (
+                        "Hay sentencias que no se pueden respaldar y no se "
+                        "ha aplicado nada. Para ejecutarlas sin respaldo, "
+                        "envía una solicitud nueva marcando «Ejecutar "
+                        "también lo que no se puede respaldar».")
+                elif ejecucion.sin_respaldo:
+                    resultado["motivo"] = (
+                        "Hay cambios que el respaldo no cubre (triggers o "
+                        "cascadas) y no se ha aplicado nada. Si son "
+                        "esperables, envía una solicitud nueva marcando "
+                        "«Permitir cambios sin respaldo» o añadiendo esas "
+                        "tablas a las que se ignoran.")
         except ErrorEjecucion as error:
             resultado["motivo"] = f"Error, se ha hecho ROLLBACK. {error}"
         except Exception as error:  # noqa: BLE001 - se registra y se informa
