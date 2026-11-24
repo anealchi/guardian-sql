@@ -354,6 +354,9 @@ def _web(args):
               "  guardian usuario crear NOMBRE --rol admin",
               file=sys.stderr)
         return SALIDA_ERROR
+    # Ejecuciones que se quedaron a medias si el servidor se detuvo.
+    for linea in app.state.servicio.recuperar_interrumpidas():
+        print(linea, file=sys.stderr)
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         print("Aviso: escuchando fuera de este equipo sin HTTPS. Pon un "
               "proxy con HTTPS delante (las contraseñas y la cookie de "

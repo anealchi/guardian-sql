@@ -32,8 +32,8 @@ from guardian.impacto import (
     origen_de_modificacion, preparar_transaccion, prefijo_with,
 )
 from guardian.respaldo import (
-    ESQUEMA, SQL_CREAR, nuevo_id, sql_guardar_antes, sql_guardar_despues,
-    sql_insertar_con_respaldo,
+    ESQUEMA, SQL_CREAR, clave_bloqueo, nuevo_id, sql_guardar_antes,
+    sql_guardar_despues, sql_insertar_con_respaldo, validar_id,
 )
 from guardian.sentencias import (
     CONFIGURACION, CONSULTA, DDL, MODIFICACION, TRANSACCION, deparsear,
@@ -263,21 +263,35 @@ def _resumen_sin_respaldo(ejecucion):
 def ejecutar(dsn, nombre_script, fuente, sentencias, confirmar,
              forzar=False, permitir_indirectos=False, ignorar=(),
              statement_timeout="60s", lock_timeout="3s",
-             tiempo_confirmacion=120, origen=None):
+             tiempo_confirmacion=120, origen=None, ejecucion_id=None,
+             al_empezar=None):
     """Ejecuta el script con respaldo. Devuelve una `Ejecucion`.
 
     `confirmar(ejecucion)` se llama con la transacción abierta y decide si
     se hace COMMIT. Lanza `ErrorEjecucion` si una sentencia falla.
     `origen` (opcional) = {"solicitud", "solicitado_por", "aprobado_por"},
     que se guarda en `guardian_backup.ejecuciones`.
+
+    Nada más conectar se toma el advisory lock de `clave_bloqueo()` y se
+    llama a `al_empezar(ejecucion)`: quien lo registre ahí sabe que, si el
+    bloqueo está libre, la ejecución ya no sigue (ver `estado_en_base`).
+    Si `al_empezar` lanza una excepción, no se ejecuta nada.
     """
-    ejecucion = Ejecucion(id=nuevo_id(), script=nombre_script)
+    ejecucion = Ejecucion(id=validar_id(ejecucion_id or nuevo_id()),
+                          script=nombre_script)
     ejecucion.hallazgos = analizar(sentencias)
     criticos = [h for h in ejecucion.hallazgos if h.nivel == CRITICO]
     ignorar = set(ignorar)
     temporales = tablas_temporales(sentencias)
 
     with conectar(dsn, autocommit=False) as conexion:
+        # De sesión: sigue tomado tras los ROLLBACK y se suelta al cerrar
+        # la conexión, también si el proceso muere.
+        conexion.execute("SELECT pg_advisory_lock(%s)",
+                         (clave_bloqueo(ejecucion.id),))
+        conexion.rollback()
+        if al_empezar is not None:
+            al_empezar(ejecucion)
         tablas = leer_tablas(conexion, tablas_permanentes_escritas(
             sentencias))
         conexion.rollback()
@@ -330,6 +344,41 @@ def ejecutar(dsn, nombre_script, fuente, sentencias, confirmar,
             if not ejecucion.aplicada:
                 conexion.rollback()
     return ejecucion
+
+
+EN_CURSO = "en curso"
+SIN_CONFIRMAR = "sin confirmar"
+
+
+def estado_en_base(dsn, ejecucion_id):
+    """Qué fue de una ejecución cuyo proceso se interrumpió.
+
+    Devuelve (estado, filas respaldadas). `estado` es EN_CURSO si la
+    conexión que la ejecuta sigue abierta; SIN_CONFIRMAR si terminó sin
+    COMMIT (PostgreSQL deshizo la transacción y no queda rastro), o el
+    estado de `guardian_backup.ejecuciones` ('aplicado', 'deshecho').
+    """
+    clave = clave_bloqueo(ejecucion_id)
+    with conectar(dsn, autocommit=True) as conexion:
+        libre = conexion.execute("SELECT pg_try_advisory_lock(%s)",
+                                 (clave,)).fetchone()[0]
+        if not libre:
+            return EN_CURSO, None
+        try:
+            existe = conexion.execute(
+                "SELECT to_regclass(%s) IS NOT NULL",
+                (f"{ESQUEMA}.ejecuciones",)).fetchone()[0]
+            fila = existe and conexion.execute(
+                f"SELECT e.estado, coalesce(sum(s.filas), 0)::int "
+                f"FROM {ESQUEMA}.ejecuciones e "
+                f"LEFT JOIN {ESQUEMA}.sentencias s ON s.ejecucion = e.id "
+                f"WHERE e.id = %s GROUP BY e.id",
+                (ejecucion_id,)).fetchone()
+        finally:
+            conexion.execute("SELECT pg_advisory_unlock(%s)", (clave,))
+    if not fila:
+        return SIN_CONFIRMAR, None
+    return fila[0], fila[1]
 
 
 def _ejecutar_sentencias(conexion, ejecucion, sentencias, tablas,

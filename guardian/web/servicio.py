@@ -6,6 +6,10 @@
         ├──rechazar──▶ rechazada              ejecutada ──deshacer──▶ deshecha
         └──cancelar──▶ cancelada
 
+Si el servidor se detiene a mitad de una ejecución, la solicitud se queda
+en 'ejecutando'; `recuperar()` mira en PostgreSQL si hubo COMMIT y la pasa
+a 'ejecutada' o 'no_aplicada' (o 'deshecha' si se deshizo por la CLI).
+
 Reglas principales:
 
 - Quien aprueba es un aprobador o admin **distinto** de quien solicita.
@@ -30,6 +34,9 @@ from guardian.web.almacen import ahora as _ahora
 
 TAMANO_MAXIMO = 1_000_000
 _MODIFICACIONES = ("UPDATE", "DELETE", "INSERT")
+# Autor de lo que hace el servidor por su cuenta (recuperar al arrancar),
+# como "consola" en los eventos de la CLI.
+SISTEMA = {"id": None, "nombre": "servidor", "rol": "admin"}
 
 
 class ErrorFlujo(Exception):
@@ -232,21 +239,44 @@ class Servicio:
                                    {"comentario": comentario.strip()})
             return self.almacen.solicitud(solicitud_id, db)
 
+    def _comprobar_ejecutor(self, usuario, solicitud):
+        if (usuario["id"] != solicitud["solicitante_id"]
+                and not _es_aprobador(usuario)):
+            raise Prohibido("Solo quien la pidió o un aprobador puede "
+                            "ejecutarla.")
+
     def ejecutar(self, usuario, solicitud_id):
         from guardian.ejecucion import ErrorEjecucion, ejecutar
+        from guardian.respaldo import nuevo_id
 
         with self.almacen.transaccion() as db:
             solicitud = self._cargar(db, solicitud_id)
-            if (usuario["id"] != solicitud["solicitante_id"]
-                    and not _es_aprobador(usuario)):
-                raise Prohibido("Solo quien la pidió o un aprobador puede "
-                                "ejecutarla.")
+            self._comprobar_ejecutor(usuario, solicitud)
+            if solicitud["estado"] != "aprobada":
+                raise Conflicto(f"La solicitud está en estado "
+                                f"'{solicitud['estado']}': no se puede "
+                                "ejecutar.")
             if _hash(solicitud["sql"]) != solicitud["hash"]:
                 raise Conflicto("El script no coincide con su hash.")
-            self._transicion(db, solicitud, ("aprobada",),
-                             estado="ejecutando", ejecutor_id=usuario["id"])
-            self.almacen.registrar(db, usuario, "ejecucion_iniciada",
-                                   solicitud_id, {"hash": solicitud["hash"]})
+
+        ejecucion_id = nuevo_id()
+        iniciada = False
+
+        def empezar(_ejecucion):
+            # Se llama con el advisory lock de la ejecución ya tomado: así
+            # `recuperar()` nunca ve 'ejecutando' sin poder saber si sigue.
+            nonlocal iniciada
+            with self.almacen.transaccion() as db:
+                actual = self._cargar(db, solicitud_id)
+                self._transicion(db, actual, ("aprobada",),
+                                 estado="ejecutando",
+                                 ejecutor_id=usuario["id"],
+                                 ejecucion_id=ejecucion_id)
+                self.almacen.registrar(db, usuario, "ejecucion_iniciada",
+                                       solicitud_id,
+                                       {"hash": solicitud["hash"],
+                                        "ejecucion": ejecucion_id})
+            iniciada = True
 
         conexion = self._conexion(solicitud["conexion"])
         opciones = solicitud["opciones"]
@@ -265,7 +295,6 @@ class Servicio:
 
         resultado = {"discrepancias": discrepancias}
         estado = "fallida"
-        ejecucion_id = None
         try:
             ejecucion = ejecutar(
                 conexion.dsn, solicitud["script_nombre"], solicitud["sql"],
@@ -278,10 +307,11 @@ class Servicio:
                 lock_timeout=conexion.lock_timeout,
                 origen={"solicitud": str(solicitud_id),
                         "solicitado_por": solicitud["solicitante"],
-                        "aprobado_por": solicitud["aprobador"]})
+                        "aprobado_por": solicitud["aprobador"]},
+                ejecucion_id=ejecucion_id, al_empezar=empezar)
             resultado.update(_resultado_ejecucion(ejecucion))
             if ejecucion.aplicada:
-                estado, ejecucion_id = "ejecutada", ejecucion.id
+                estado = "ejecutada"
             else:
                 estado = "no_aplicada"
                 if discrepancias:
@@ -292,20 +322,109 @@ class Servicio:
         except ErrorEjecucion as error:
             resultado["motivo"] = f"Error, se ha hecho ROLLBACK. {error}"
         except Exception as error:  # noqa: BLE001 - se registra y se informa
+            if not iniciada:
+                # No llegó a empezar: la solicitud sigue aprobada.
+                if isinstance(error, ErrorFlujo):
+                    raise
+                raise ErrorFlujo(
+                    f"No se pudo empezar la ejecución en "
+                    f"'{solicitud['conexion']}': {str(error).strip()}")
             resultado["motivo"] = f"Error inesperado: {error}"
         finally:
-            with self.almacen.transaccion() as db:
-                self.almacen.actualizar_solicitud(
-                    db, solicitud_id, estado=estado, resultado=resultado,
-                    ejecucion_id=ejecucion_id, ejecutada_en=_ahora())
-                self.almacen.registrar(db, usuario, f"ejecucion_{estado}",
-                                       solicitud_id, {
-                                           "ejecucion": ejecucion_id,
-                                           "filas_respaldadas": resultado.get(
-                                               "filas_respaldadas"),
-                                           "motivo": resultado.get("motivo"),
-                                           "discrepancias": discrepancias})
+            if iniciada:
+                aplicada = estado == "ejecutada"
+                with self.almacen.transaccion() as db:
+                    self.almacen.actualizar_solicitud(
+                        db, solicitud_id, estado=estado,
+                        resultado=resultado, ejecutada_en=_ahora(),
+                        ejecucion_id=ejecucion_id if aplicada else None)
+                    self.almacen.registrar(
+                        db, usuario, f"ejecucion_{estado}", solicitud_id, {
+                            "ejecucion": ejecucion_id if aplicada else None,
+                            "filas_respaldadas": resultado.get(
+                                "filas_respaldadas"),
+                            "motivo": resultado.get("motivo"),
+                            "discrepancias": discrepancias})
         return self.almacen.solicitud(solicitud_id)
+
+    def recuperar(self, usuario, solicitud_id):
+        """Cierra una solicitud que se quedó en 'ejecutando'.
+
+        Pasa si el servidor web se detuvo durante la ejecución. Se mira en
+        PostgreSQL qué fue de ella: si sigue en curso, no se toca; si hubo
+        COMMIT, queda 'ejecutada'; si no, PostgreSQL ya deshizo la
+        transacción y queda 'no_aplicada'.
+        """
+        from guardian.ejecucion import EN_CURSO, SIN_CONFIRMAR, estado_en_base
+
+        with self.almacen.transaccion() as db:
+            solicitud = self._cargar(db, solicitud_id)
+        self._comprobar_ejecutor(usuario, solicitud)
+        if solicitud["estado"] != "ejecutando":
+            raise Conflicto("Solo se comprueban las solicitudes que se "
+                            "quedaron ejecutándose.")
+        ejecucion_id = solicitud["ejecucion_id"]
+        if not ejecucion_id:
+            raise Conflicto("No consta qué ejecución le corresponde: busca "
+                            f"la solicitud {solicitud_id} en "
+                            "guardian_backup.ejecuciones.")
+        conexion = self._conexion(solicitud["conexion"])
+        try:
+            estado_base, filas = estado_en_base(conexion.dsn, ejecucion_id)
+        except psycopg.Error as error:
+            raise Conflicto(f"No se pudo comprobar en '{conexion.nombre}': "
+                            f"{str(error).strip()}")
+        if estado_base == EN_CURSO:
+            raise Conflicto("La ejecución sigue en curso en PostgreSQL. "
+                            "Vuelve a comprobarlo en unos minutos.")
+        if estado_base == SIN_CONFIRMAR:
+            estado, motivo = "no_aplicada", (
+                "La ejecución se interrumpió antes del COMMIT: PostgreSQL "
+                "deshizo la transacción y no se aplicó nada. Reanaliza y "
+                "vuelve a aprobar.")
+        elif estado_base == "aplicado":
+            estado, motivo = "ejecutada", (
+                "La ejecución se interrumpió después del COMMIT: los "
+                "cambios están aplicados y respaldados. El detalle por "
+                "sentencia no llegó a guardarse aquí.")
+        else:
+            estado, motivo = "deshecha", (
+                "La ejecución se interrumpió después del COMMIT y luego se "
+                "deshizo fuera de la aplicación.")
+        aplicada = estado_base != SIN_CONFIRMAR
+        resultado = {"motivo": motivo, "recuperada": True,
+                     "aplicada": aplicada, "discrepancias": []}
+        if aplicada:
+            resultado["filas_respaldadas"] = filas
+        with self.almacen.transaccion() as db:
+            solicitud = self._cargar(db, solicitud_id)
+            self._transicion(db, solicitud, ("ejecutando",), estado=estado,
+                             resultado=resultado, ejecutada_en=_ahora(),
+                             ejecucion_id=ejecucion_id if aplicada else None)
+            self.almacen.registrar(db, usuario, "ejecucion_recuperada",
+                                   solicitud_id, {
+                                       "ejecucion": ejecucion_id,
+                                       "estado": estado,
+                                       "filas_respaldadas": filas,
+                                       "motivo": motivo})
+            return self.almacen.solicitud(solicitud_id, db)
+
+    def recuperar_interrumpidas(self):
+        """Intenta cerrar todas las solicitudes en 'ejecutando'.
+
+        Devuelve una línea de texto por solicitud. Se llama al arrancar el
+        servidor, cuando ninguna ejecución de este proceso está en marcha.
+        """
+        lineas = []
+        for s in self.almacen.solicitudes("ejecutando"):
+            try:
+                estado = self.recuperar(SISTEMA, s["id"])["estado"]
+                lineas.append(f"Solicitud {s['id']} interrumpida: queda "
+                              f"'{estado}'.")
+            except ErrorFlujo as error:
+                lineas.append(f"Solicitud {s['id']} sigue en 'ejecutando': "
+                              f"{error}")
+        return lineas
 
     def deshacer(self, usuario, solicitud_id, comentario=""):
         from guardian.deshacer import ErrorDeshacer, deshacer

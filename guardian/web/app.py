@@ -173,7 +173,7 @@ def crear_app(config):
                    usuario=Depends(usuario_actual)):
             comentario = datos.comentario if datos else ""
             metodo = getattr(servicio, nombre)
-            if nombre in ("reanalizar", "ejecutar"):
+            if nombre in ("reanalizar", "ejecutar", "recuperar"):
                 solicitud = metodo(usuario, solicitud_id)
             else:
                 solicitud = metodo(usuario, solicitud_id, comentario)
@@ -183,7 +183,7 @@ def crear_app(config):
         return accion
 
     for nombre in ("aprobar", "rechazar", "cancelar", "comentar",
-                   "reanalizar", "ejecutar", "deshacer"):
+                   "reanalizar", "ejecutar", "recuperar", "deshacer"):
         app.post(f"/api/solicitudes/{{solicitud_id}}/{nombre}")(
             _accion(nombre))
 

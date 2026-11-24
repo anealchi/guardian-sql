@@ -14,6 +14,7 @@ Como todo va en la misma transacción, si el script no se confirma tampoco
 queda respaldo.
 """
 
+import hashlib
 import re
 import secrets
 from datetime import datetime
@@ -82,6 +83,18 @@ def validar_id(ejecucion):
         raise ValueError(f"Identificador de ejecución no válido: "
                          f"{ejecucion!r}")
     return ejecucion
+
+
+def clave_bloqueo(ejecucion):
+    """Clave del advisory lock que mantiene viva una ejecución.
+
+    `ejecutar()` la toma al conectar y la conserva hasta cerrar la
+    conexión, así que si otra sesión puede tomarla, la ejecución ya ha
+    terminado (con COMMIT o sin él).
+    """
+    resumen = hashlib.sha256(
+        f"guardian:{validar_id(ejecucion)}".encode("ascii")).digest()
+    return int.from_bytes(resumen[:8], "big", signed=True)
 
 
 def ident(nombre):

@@ -41,6 +41,12 @@ El flujo de cada script:
    que volver a analizar y aprobar.
 4. **Un aprobador puede deshacerla** (como `guardian deshacer`).
 
+Si el servidor se detiene a mitad de una ejecución, PostgreSQL deshace la
+transacción, pero la solicitud se queda en «Ejecutando». Al arrancar,
+`guardian web` mira en la base si hubo COMMIT y la deja como ejecutada o
+como no aplicada; también se puede comprobar desde el botón «Comprobar la
+ejecución» del detalle.
+
 En el detalle de cada solicitud, el script se muestra con las consecuencias
 anotadas al margen de cada sentencia: filas que cambia, cambios por triggers
 y avisos.

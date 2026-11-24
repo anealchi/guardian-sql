@@ -8,6 +8,7 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
+from guardian.respaldo import clave_bloqueo, nuevo_id  # noqa: E402
 from guardian.web import almacen as modulo_almacen  # noqa: E402
 from guardian.web.app import crear_app  # noqa: E402
 from guardian.web.config import Config, Conexion  # noqa: E402
@@ -183,6 +184,86 @@ def test_si_cambian_los_datos_no_se_aplica(app, dsn, script_real):
     datos = post(ana, f"/api/solicitudes/{sid}/reanalizar").json()
     assert datos["estado"] == "pendiente" and datos["aprobador"] is None
     assert datos["informe"]["filas_previstas"] == 9
+
+
+def _forzar(app, sid, **campos):
+    """Cambia la solicitud en SQLite como la dejaría un servidor caído."""
+    db = sqlite3.connect(app.state.almacen.ruta)
+    asignaciones = ", ".join(f"{c} = ?" for c in campos)
+    db.execute(f"update solicitudes set {asignaciones} where id = ?",
+               [*campos.values(), sid])
+    db.commit()
+    db.close()
+
+
+def _aprobada(app, script_real):
+    ana, luis = cliente(app, "ana"), cliente(app, "luis")
+    sid = nueva(ana, script_real)["id"]
+    assert post(luis, f"/api/solicitudes/{sid}/aprobar").status_code == 200
+    return ana, luis, sid
+
+
+def test_ejecucion_interrumpida_antes_del_commit(app, dsn, script_real):
+    ana, _luis, sid = _aprobada(app, script_real)
+    # El servidor murió con la transacción abierta: PostgreSQL la deshizo
+    # y no quedó nada en guardian_backup.
+    _forzar(app, sid, estado="ejecutando", ejecucion_id=nuevo_id())
+    datos = post(ana, f"/api/solicitudes/{sid}/recuperar").json()
+    assert datos["estado"] == "no_aplicada"
+    assert datos["ejecucion_id"] is None
+    assert "antes del COMMIT" in datos["resultado"]["motivo"]
+    assert datos["eventos"][-1]["accion"] == "ejecucion_recuperada"
+    assert borradas(dsn) == 0
+    # Como cualquier no aplicada: se reanaliza y se vuelve a aprobar.
+    r = post(ana, f"/api/solicitudes/{sid}/reanalizar")
+    assert r.json()["estado"] == "pendiente"
+
+
+def test_ejecucion_interrumpida_despues_del_commit(app, dsn, script_real):
+    ana, luis, sid = _aprobada(app, script_real)
+    ejecucion = post(ana, f"/api/solicitudes/{sid}/ejecutar").json()[
+        "ejecucion_id"]
+    # Murió tras el COMMIT, antes de anotar el resultado en SQLite.
+    _forzar(app, sid, estado="ejecutando", resultado=None)
+    datos = post(luis, f"/api/solicitudes/{sid}/recuperar").json()
+    assert datos["estado"] == "ejecutada"
+    assert datos["ejecucion_id"] == ejecucion
+    assert datos["resultado"]["filas_respaldadas"] == 6
+    assert borradas(dsn) == 2
+    r = post(luis, f"/api/solicitudes/{sid}/deshacer", comentario="Error")
+    assert r.json()["estado"] == "deshecha"
+    assert borradas(dsn) == 0
+
+
+def test_ejecucion_en_curso_no_se_toca(app, dsn, script_real):
+    ana, _luis, sid = _aprobada(app, script_real)
+    assert post(ana, f"/api/solicitudes/{sid}/recuperar").status_code == 409
+    ejecucion = nuevo_id()
+    _forzar(app, sid, estado="ejecutando", ejecucion_id=ejecucion)
+    servicio = app.state.servicio
+    # Otra conexión mantiene el bloqueo, como la de una ejecución viva.
+    with psycopg.connect(dsn, autocommit=True) as viva:
+        viva.execute("select pg_advisory_lock(%s)",
+                     (clave_bloqueo(ejecucion),))
+        r = post(ana, f"/api/solicitudes/{sid}/recuperar")
+        assert r.status_code == 409 and "en curso" in r.json()["detail"]
+        assert "sigue en 'ejecutando'" in servicio.recuperar_interrumpidas()[0]
+    # Al cerrarse esa conexión, el arranque del servidor la cierra.
+    assert servicio.recuperar_interrumpidas() == [
+        f"Solicitud {sid} interrumpida: queda 'no_aplicada'."]
+    eventos = ana.get(f"/api/solicitudes/{sid}").json()["eventos"]
+    assert eventos[-1]["usuario"] == "servidor"
+
+
+def test_si_no_conecta_al_ejecutar_sigue_aprobada(app, script_real):
+    ana, _luis, sid = _aprobada(app, script_real)
+    _forzar(app, sid, conexion="caida")
+    r = post(ana, f"/api/solicitudes/{sid}/ejecutar")
+    assert r.status_code == 400
+    assert "No se pudo empezar" in r.json()["detail"]
+    datos = ana.get(f"/api/solicitudes/{sid}").json()
+    assert datos["estado"] == "aprobada"
+    assert "ejecucion_iniciada" not in [e["accion"] for e in datos["eventos"]]
 
 
 def test_rechazar_y_cancelar(app, script_real):

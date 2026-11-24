@@ -33,8 +33,10 @@ guardian.toml
 informe*.md
 deshacer_*.sql
 
-# Skills de Claude Code instaladas con `npx skills`: solo se versiona
-# skills-lock.json; se reinstalan con `npx skills experimental_install`.
+# Skills instaladas con `npx skills` (copia en .agents/skills/ y enlace en
+# .claude/skills/): solo se versiona skills-lock.json; se reinstalan con
+# `npx skills experimental_install`.
+.agents/skills/
 .claude/skills/
 
 # Editores y sistema operativo

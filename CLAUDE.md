@@ -84,6 +84,11 @@ Todo debe pasar flake8 con la configuración por defecto (79 caracteres).
   docstring). Las transiciones se hacen con `UPDATE ... WHERE estado IN
   (...)` para que dos peticiones a la vez no ejecuten dos veces. Al
   ejecutar, `confirmar()` compara las filas reales con `filas_aprobadas()`.
+  `ejecutar()` toma un advisory lock de sesión (`clave_bloqueo(id)`)
+  **antes** de pasar la solicitud a 'ejecutando' y guardar su
+  `ejecucion_id`; `recuperar()` (al arrancar y con el botón del detalle)
+  usa `estado_en_base()`: si el bloqueo está libre, la ejecución terminó, y
+  la fila de `guardian_backup.ejecuciones` dice si hubo COMMIT.
 - `app.py`: FastAPI. Middleware que exige `X-Guardian: 1` en lo que no es
   GET y añade CSP estricta (por eso `estatico/` no puede tener scripts ni
   estilos en línea).

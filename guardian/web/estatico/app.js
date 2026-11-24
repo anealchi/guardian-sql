@@ -42,6 +42,8 @@ const EVENTOS = {
   ejecucion_ejecutada: "Ejecutó y aplicó los cambios",
   ejecucion_no_aplicada: "Ejecutó, pero no se aplicó nada",
   ejecucion_fallida: "La ejecución falló",
+  ejecucion_recuperada: "Comprobó en la base de datos la ejecución " +
+    "interrumpida",
   deshacer: "Deshizo la ejecución",
   deshacer_fallido: "No pudo deshacer la ejecución",
   acceso: "Inició sesión",
@@ -538,6 +540,16 @@ function accionesDisponibles(s) {
       const r = await hacer("ejecutar")();
       avisar(r.estado === "ejecutada" ? "Cambios aplicados."
         : "No se ha aplicado nada. Revisa el resultado.", r.estado !== "ejecutada");
+    }));
+  }
+  if (s.estado === "ejecutando" && (mia || esAprobador())) {
+    // Si el servidor se detuvo a mitad, la solicitud se queda aquí: esto
+    // mira en PostgreSQL si hubo COMMIT.
+    lista.push(botonAccion("Comprobar la ejecución", "", async () => {
+      const r = await hacer("recuperar")();
+      avisar(r.estado === "ejecutada" ? "Los cambios están aplicados."
+        : r.estado === "deshecha" ? "La ejecución ya estaba deshecha."
+          : "No se aplicó nada.", r.estado === "no_aplicada");
     }));
   }
   if (s.estado === "pendiente" && esAprobador() && !mia) {
