@@ -87,6 +87,10 @@ Todo debe pasar flake8 con la configuración por defecto (79 caracteres).
   docstring). Las transiciones se hacen con `UPDATE ... WHERE estado IN
   (...)` para que dos peticiones a la vez no ejecuten dos veces. Al
   ejecutar, `confirmar()` compara las filas reales con `filas_aprobadas()`.
+  Mientras está pendiente, solo quien la pidió puede editarla (`editar()`,
+  `PATCH /api/solicitudes/{id}`; se reanaliza si cambia el script o la
+  conexión). Por eso `aprobar()` recibe la `version()` (huella de script,
+  conexión, opciones e informe) que vio el aprobador y no aprueba otra.
   `ejecutar()` toma un advisory lock de sesión (`clave_bloqueo(id)`)
   **antes** de pasar la solicitud a 'ejecutando' y guardar su
   `ejecucion_id`; `recuperar()` (al arrancar y con el botón del detalle)

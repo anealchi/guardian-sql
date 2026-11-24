@@ -7,7 +7,7 @@ Todo funciona en local: el script y los datos no salen de tu equipo.
 
 Fases hechas: **F1** (análisis estático, lectura del esquema e impacto),
 **F2** (ejecución con respaldo y `deshacer`) y **F3** (aplicación web con
-aprobación por otra persona y auditoría). La siguiente (explicación con IA
+aprobación y auditoría). La siguiente (explicación con IA
 local) está en el plan del proyecto.
 
 ## Instalación
@@ -41,8 +41,10 @@ El flujo de cada script:
 1. **Alguien lo envía.** Se analiza en ese momento contra la base de datos
    elegida (contando filas o simulando, según la conexión) y se guarda el
    informe.
-2. **Otra persona lo aprueba o lo rechaza.** Nadie puede aprobar lo suyo, y
-   no se aprueba sin el impacto calculado. Se aprueba ese script exacto (se
+2. **Un aprobador lo aprueba o lo rechaza.** Los aprobadores y
+   administradores pueden aprobar sus propios scripts (queda marcado en el
+   historial y la auditoría); un solicitante no. No se aprueba sin el
+   impacto calculado. Se aprueba ese script exacto (se
    comprueba su hash) con esos números de filas.
 3. **Se ejecuta** con respaldo (como `guardian ejecutar`). Si alguna sentencia
    cambia un número de filas distinto del aprobado, no se aplica nada y hay

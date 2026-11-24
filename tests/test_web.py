@@ -283,6 +283,99 @@ def test_rechazar_y_cancelar(app, script_real):
         "estado"] == "cancelada"
 
 
+UNA_TAREA = "UPDATE tarea_planificacion SET estado_tarea = 20 WHERE id = 1;"
+DOS_TAREAS = ("UPDATE tarea_planificacion SET estado_tarea = 20 "
+              "WHERE id IN (1, 2);")
+
+
+def editar(c, sid, **cambios):
+    datos = {"titulo": "Cerrar tareas", "motivo": "Prueba",
+             "conexion": "pruebas", "script_nombre": "tareas.sql",
+             "sql": UNA_TAREA}
+    datos.update(cambios)
+    return c.patch(f"/api/solicitudes/{sid}", json=datos, headers=CABECERA)
+
+
+def test_editar_pendiente(app):
+    ana, luis = cliente(app, "ana"), cliente(app, "luis")
+    r = post(ana, "/api/solicitudes", titulo="Cerrar tareas",
+             motivo="Prueba", conexion="pruebas",
+             script_nombre="tareas.sql", sql=UNA_TAREA)
+    creada = r.json()
+    sid = creada["id"]
+    assert creada["informe"]["filas_previstas"] == 1
+
+    # Sin cambios no se registra nada.
+    r = editar(ana, sid)
+    assert r.status_code == 200
+    assert [e["accion"] for e in r.json()["eventos"]] == ["crear"]
+
+    # Cambiar solo el título no vuelve a analizar.
+    r = editar(ana, sid, titulo="Cerrar la tarea 1")
+    datos = r.json()
+    assert datos["titulo"] == "Cerrar la tarea 1"
+    assert datos["informe_fecha"] == creada["informe_fecha"]
+    assert datos["eventos"][-1]["detalle"] == {"cambios": ["titulo"]}
+
+    # Cambiar el script lo vuelve a analizar y guarda los dos hashes.
+    vista = datos["version"]
+    r = editar(ana, sid, sql=DOS_TAREAS, forzar=True)
+    datos = r.json()
+    assert datos["estado"] == "pendiente"
+    assert datos["informe"]["filas_previstas"] == 2
+    assert datos["opciones"]["forzar"] is True
+    evento = datos["eventos"][-1]
+    assert evento["accion"] == "editar"
+    assert evento["detalle"]["cambios"] == ["opciones", "sql", "titulo"]
+    assert evento["detalle"]["hash_anterior"] == creada["hash"]
+    assert evento["detalle"]["hash"] == datos["hash"] != creada["hash"]
+    assert evento["detalle"]["filas_previstas"] == 2
+
+    # Quien tenía abierta la versión anterior no puede aprobarla.
+    r = post(luis, f"/api/solicitudes/{sid}/aprobar", version=vista)
+    assert r.status_code == 409 and "ha cambiado" in r.json()["detail"]
+    r = post(luis, f"/api/solicitudes/{sid}/aprobar",
+             version=datos["version"])
+    assert r.json()["estado"] == "aprobada"
+
+    # Aprobada ya no se edita.
+    assert editar(ana, sid, sql=UNA_TAREA).status_code == 409
+    verificar = app.state.almacen.verificar_auditoria()
+    assert verificar[0], verificar
+
+
+def test_editar_solo_quien_la_pidio(app):
+    ana = cliente(app, "ana")
+    sid = post(ana, "/api/solicitudes", titulo="Cerrar tareas",
+               conexion="pruebas", sql=UNA_TAREA).json()["id"]
+    for otro in ("luis", "admin"):
+        r = editar(cliente(app, otro), sid, sql=DOS_TAREAS)
+        assert r.status_code == 403
+    # Los datos se validan igual que al crear.
+    assert editar(ana, sid, titulo=" ").status_code == 400
+    assert editar(ana, sid, sql="updat t").status_code == 400
+    assert editar(ana, 999).status_code == 404
+
+
+def test_aprobador_aprueba_lo_suyo(app):
+    ana = cliente(app, "ana")
+    for nombre in ("luis", "admin"):
+        c = cliente(app, nombre)
+        sid = post(c, "/api/solicitudes", titulo="Cerrar tareas",
+                   conexion="pruebas", sql=UNA_TAREA).json()["id"]
+        # Un solicitante sigue sin poder aprobar nada.
+        assert post(ana, f"/api/solicitudes/{sid}/aprobar").status_code == 403
+        r = post(c, f"/api/solicitudes/{sid}/aprobar")
+        assert r.json()["estado"] == "aprobada"
+        assert r.json()["aprobador"] == nombre
+        assert r.json()["eventos"][-1]["detalle"]["propia"] is True
+    # Si aprueba otra persona, el evento no lleva la marca.
+    sid = post(ana, "/api/solicitudes", titulo="Cerrar tareas",
+               conexion="pruebas", sql=UNA_TAREA).json()["id"]
+    r = post(cliente(app, "luis"), f"/api/solicitudes/{sid}/aprobar")
+    assert "propia" not in r.json()["eventos"][-1]["detalle"]
+
+
 def test_sin_impacto_no_se_puede_aprobar(app, script_real):
     ana, luis = cliente(app, "ana"), cliente(app, "luis")
     solicitud = nueva(ana, script_real, conexion="caida")

@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from guardian.web.almacen import ROLES, Almacen
-from guardian.web.servicio import ErrorFlujo, Servicio
+from guardian.web.servicio import ErrorFlujo, Servicio, version
 
 ESTATICO = Path(__file__).resolve().parent / "estatico"
 COOKIE = "guardian_sesion"
@@ -54,6 +54,8 @@ class NuevaSolicitud(BaseModel):
 
 class Comentario(BaseModel):
     comentario: str = ""
+    # Al aprobar: la versión de la solicitud que tenía abierta el aprobador.
+    version: str | None = None
 
 
 class NuevoUsuario(BaseModel):
@@ -163,6 +165,12 @@ def crear_app(config):
                _usuario=Depends(usuario_actual)):
         return almacen.solicitudes(estado)
 
+    def completa(solicitud):
+        """La solicitud con su historial y su versión, para el detalle."""
+        solicitud["eventos"] = almacen.eventos(solicitud["id"])
+        solicitud["version"] = version(solicitud)
+        return solicitud
+
     @app.post("/api/solicitudes", status_code=201)
     def crear(datos: NuevaSolicitud, usuario=Depends(usuario_actual)):
         return servicio.crear(usuario, **datos.model_dump())
@@ -172,8 +180,13 @@ def crear_app(config):
         solicitud = almacen.solicitud(solicitud_id)
         if solicitud is None:
             raise HTTPException(404, "No existe la solicitud.")
-        solicitud["eventos"] = almacen.eventos(solicitud_id)
-        return solicitud
+        return completa(solicitud)
+
+    @app.patch("/api/solicitudes/{solicitud_id}")
+    def editar(solicitud_id: int, datos: NuevaSolicitud,
+               usuario=Depends(usuario_actual)):
+        return completa(servicio.editar(usuario, solicitud_id,
+                                        **datos.model_dump()))
 
     def _accion(nombre):
         def accion(solicitud_id: int, datos: Comentario | None = None,
@@ -182,10 +195,12 @@ def crear_app(config):
             metodo = getattr(servicio, nombre)
             if nombre in ("reanalizar", "ejecutar", "recuperar"):
                 solicitud = metodo(usuario, solicitud_id)
+            elif nombre == "aprobar":
+                solicitud = metodo(usuario, solicitud_id, comentario,
+                                   vista=datos.version if datos else None)
             else:
                 solicitud = metodo(usuario, solicitud_id, comentario)
-            solicitud["eventos"] = almacen.eventos(solicitud_id)
-            return solicitud
+            return completa(solicitud)
         accion.__name__ = nombre
         return accion
 

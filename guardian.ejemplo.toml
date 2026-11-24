@@ -25,3 +25,16 @@ dsn_env = "GUARDIAN_DSN_PRODUCCION"
 simular = false
 statement_timeout = "60s"
 lock_timeout = "3s"
+
+# Opcional: explicación de cada script con un modelo local de Ollama (F4).
+# Sin esta sección, la web no ofrece explicaciones.
+[ia]
+modelo = "qwen2.5-coder:7b"
+url = "http://127.0.0.1:11434"
+# true: se explica sola al enviar y al volver a analizar. false: con el
+# botón «Explicar con IA» del detalle.
+automatica = true
+# Segundos máximos por explicación (en CPU, un 7B puede tardar minutos).
+tiempo_maximo = 300
+# Ventana de contexto del modelo, en tokens (num_ctx).
+contexto = 16384

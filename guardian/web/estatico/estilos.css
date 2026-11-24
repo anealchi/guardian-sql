@@ -66,6 +66,17 @@
 
   --radio: 6px;
   --radio-chico: 4px;
+
+  /* Movimiento: pocas duraciones y dos curvas, sin rebote. Entrar es algo
+     más lento que salir; pulsar, lo más rápido. Solo se animan transform,
+     opacity y colores, nunca medidas. */
+  --m-entra: 150ms;
+  --m-sale: 120ms;
+  --m-pulsa: 90ms;
+  --m-panel: 200ms;
+  --m-llega: 520ms;
+  --curva: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --curva-llegada: cubic-bezier(0.22, 1, 0.36, 1);
   --control: 2.5rem;
   --ancho: 1240px;
   --margen: max(var(--e-4), calc((100% - var(--ancho)) / 2));
@@ -118,7 +129,17 @@ body {
 
 [hidden] { display: none !important; }
 
-a { color: var(--cobalto); text-underline-offset: 0.18em; }
+a {
+  color: var(--cobalto);
+  text-underline-offset: 0.18em;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  transition: color var(--m-sale) var(--curva),
+    text-decoration-color var(--m-sale) var(--curva);
+}
+a:hover {
+  text-decoration-color: currentColor;
+  transition-duration: var(--m-entra);
+}
 
 :focus-visible {
   outline: 2px solid var(--cobalto);
@@ -164,6 +185,13 @@ p { margin: 0; }
   background: var(--superficie);
   min-height: 3.5rem;
 }
+/* Translúcida donde se puede: el contenido se intuye al pasar por debajo. */
+@supports (backdrop-filter: blur(1px)) {
+  .barra {
+    background: color-mix(in srgb, var(--superficie) 82%, transparent);
+    backdrop-filter: saturate(1.4) blur(12px);
+  }
+}
 
 .marca {
   display: inline-flex;
@@ -189,20 +217,44 @@ p { margin: 0; }
 .menu { display: flex; gap: var(--e-1); align-self: stretch; }
 
 .menu a {
+  position: relative;
   display: flex;
   align-items: center;
   color: var(--grafito);
   text-decoration: none;
   padding: 0 var(--e-3);
-  border-bottom: 2px solid transparent;
   margin-bottom: -1px;
   white-space: nowrap;
 }
 .menu a:hover { color: var(--tinta); }
-.menu a[aria-current="page"] {
-  color: var(--tinta);
-  border-bottom-color: var(--cobalto);
-  font-weight: 600;
+.menu a[aria-current="page"] { color: var(--tinta); font-weight: 600; }
+
+/* Raya bajo la sección: se dibuja de izquierda a derecha al pasar el
+   puntero y queda fija y en cobalto en la sección actual. La comparten
+   el menú y los filtros de la bandeja. */
+.menu a::after, .filtros button::after {
+  content: "";
+  position: absolute;
+  left: var(--e-3);
+  right: var(--e-3);
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--linea);
+  transform: scaleX(0);
+  transform-origin: right;
+  transition: transform var(--m-sale) var(--curva),
+    background-color var(--m-sale) var(--curva);
+}
+.menu a:hover::after, .filtros button:hover::after {
+  transform: scaleX(1);
+  transform-origin: left;
+  transition-duration: var(--m-panel);
+}
+.menu a[aria-current="page"]::after,
+.filtros button[aria-pressed="true"]::after {
+  transform: scaleX(1);
+  background: var(--cobalto);
 }
 
 .cuenta {
@@ -273,11 +325,33 @@ main:focus { outline: none; }
   text-decoration: none;
   white-space: nowrap;
   box-shadow: var(--sombra);
-  transition: border-color 0.15s, background-color 0.15s, color 0.15s;
+  transition: border-color var(--m-sale) var(--curva),
+    background-color var(--m-sale) var(--curva),
+    color var(--m-sale) var(--curva),
+    box-shadow var(--m-sale) var(--curva),
+    transform var(--m-sale) var(--curva),
+    opacity var(--m-panel) var(--curva);
 }
-.boton:hover { border-color: var(--grafito); }
-.boton:active { transform: translateY(1px); }
+.boton:hover {
+  border-color: var(--grafito);
+  transition-duration: var(--m-entra);
+}
 .boton:disabled { opacity: 0.55; cursor: progress; transform: none; }
+
+/* Con ratón, el botón sube 1 px al pasar y se hunde al pulsar: responde
+   antes de que llegue la respuesta del servidor. En pantallas táctiles,
+   solo se hunde. */
+@media (hover: hover) and (pointer: fine) {
+  .boton:not(.boton-texto):not(:disabled):hover {
+    transform: translateY(-1px);
+    box-shadow: var(--sombra), 0 4px 12px rgb(28 35 33 / 0.08);
+  }
+}
+.boton:not(:disabled):active {
+  transform: translateY(1px) scale(0.985);
+  box-shadow: none;
+  transition-duration: var(--m-pulsa);
+}
 
 .boton-principal {
   background: var(--cobalto);
@@ -353,8 +427,14 @@ input[type="file"]::file-selector-button {
   padding: var(--e-1) var(--e-3);
   margin-right: var(--e-3);
   cursor: pointer;
+  transition: border-color var(--m-sale) var(--curva),
+    background-color var(--m-sale) var(--curva);
 }
-input[type="file"]::file-selector-button:hover { border-color: var(--grafito); }
+input[type="file"]::file-selector-button:hover {
+  border-color: var(--grafito);
+  background: var(--hundido);
+  transition-duration: var(--m-entra);
+}
 
 .casilla {
   display: flex;
@@ -365,7 +445,10 @@ input[type="file"]::file-selector-button:hover { border-color: var(--grafito); }
   border-radius: var(--radio);
   background: var(--superficie);
   cursor: pointer;
+  transition: border-color var(--m-sale) var(--curva),
+    background-color var(--m-panel) var(--curva);
 }
+.casilla:hover { border-color: var(--grafito); transition-duration: var(--m-entra); }
 .casilla:has(input:checked) { border-color: var(--cobalto); background: var(--fondo-cobalto); }
 .casilla input { margin-top: var(--e-1); accent-color: var(--cobalto); }
 .casilla small { display: block; color: var(--grafito); font-size: var(--t-0); }
@@ -510,22 +593,19 @@ input[type="file"]::file-selector-button:hover { border-color: var(--grafito); }
   scrollbar-width: none;
 }
 .filtros button {
+  position: relative;
   font: inherit;
   background: none;
   border: 0;
-  border-bottom: 2px solid transparent;
   margin-bottom: -1px;
   padding: var(--e-2) var(--e-3);
   color: var(--grafito);
   cursor: pointer;
   white-space: nowrap;
+  transition: color var(--m-sale) var(--curva);
 }
-.filtros button:hover { color: var(--tinta); }
-.filtros button[aria-pressed="true"] {
-  color: var(--tinta);
-  border-bottom-color: var(--cobalto);
-  font-weight: 600;
-}
+.filtros button:hover { color: var(--tinta); transition-duration: var(--m-entra); }
+.filtros button[aria-pressed="true"] { color: var(--tinta); font-weight: 600; }
 .filtros .cuenta-filtro {
   display: inline-block;
   min-width: 1.5em;
@@ -537,6 +617,8 @@ input[type="file"]::file-selector-button:hover { border-color: var(--grafito); }
   font-size: var(--t-0);
   font-weight: 500;
   text-align: center;
+  transition: background-color var(--m-panel) var(--curva),
+    color var(--m-panel) var(--curva);
 }
 .filtros button[aria-pressed="true"] .cuenta-filtro {
   background: var(--fondo-cobalto);
@@ -572,12 +654,70 @@ input[type="file"]::file-selector-button:hover { border-color: var(--grafito); }
 }
 .tabla tbody tr:last-child td { border-bottom: 0; }
 .tabla .num { text-align: right; }
-.tabla tbody tr { cursor: pointer; transition: background-color 0.1s; }
-.tabla tbody tr:hover { background: var(--hundido); }
+.tabla tbody tr {
+  cursor: pointer;
+  transition: background-color var(--m-sale) var(--curva);
+}
+.tabla tbody tr:hover { background: var(--hundido); transition-duration: var(--m-entra); }
 .tabla-estatica tbody tr { cursor: default; }
 .tabla-estatica tbody tr:hover { background: none; }
 .tabla .titulo-solicitud { font-weight: 600; color: var(--tinta); text-decoration: none; }
 .tabla tbody tr:hover .titulo-solicitud { color: var(--cobalto); }
+
+/* La fila que lleva al detalle marca su borde izquierdo al pasar. */
+.tabla-solicitudes tbody td:first-child {
+  transition: box-shadow var(--m-sale) var(--curva);
+}
+.tabla-solicitudes tbody tr:hover td:first-child {
+  box-shadow: inset 2px 0 0 var(--cobalto);
+  transition-duration: var(--m-entra);
+}
+
+/* La bandeja ocupa justo la pantalla: barra, título y filtros se quedan
+   quietos y solo se desplaza la tabla, con su cabecera fija. En pantallas
+   muy bajas (un móvil apaisado) no quedaría sitio para las filas, así que
+   ahí se desplaza la página como siempre. */
+@media (min-height: 560px) {
+  body:has(.bandeja) {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+  }
+  body:has(.bandeja) main {
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    padding-bottom: var(--e-5);
+  }
+  .bandeja {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .bandeja .filtros { flex: none; }
+  .bandeja .tabla-contenedor {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--linea) transparent;
+  }
+  /* Con border-collapse, el borde de una celda fija se queda atrás al
+     desplazar: se dibuja con una sombra interior. */
+  .bandeja .tabla thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    border-bottom: 0;
+    box-shadow: inset 0 -1px 0 var(--linea);
+  }
+}
 
 .vacio {
   padding: var(--e-7) 0;
@@ -585,7 +725,28 @@ input[type="file"]::file-selector-button:hover { border-color: var(--grafito); }
 }
 .vacio p { color: var(--grafito); margin: var(--e-2) 0 var(--e-4); }
 
-.cargando { color: var(--grafito); padding: var(--e-6) 0; }
+.cargando {
+  display: flex;
+  align-items: center;
+  gap: var(--e-3);
+  color: var(--grafito);
+  padding: var(--e-6) 0;
+}
+.cargando::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--linea);
+  border-top-color: var(--cobalto);
+}
+/* Si la página llega rápido, el aviso de carga no llega a verse: así no
+   parpadea en cada navegación. */
+@media (prefers-reduced-motion: no-preference) {
+  .cargando { animation: aparecer var(--m-panel) var(--curva) 300ms both; }
+  .cargando::before { animation: girar 1s linear infinite; }
+}
+@keyframes girar { to { rotate: 1turn; } }
 
 /* Texto que solo hace falta cuando la tabla se ve como tarjetas. */
 .solo-movil { display: none; }
@@ -593,8 +754,21 @@ input[type="file"]::file-selector-button:hover { border-color: var(--grafito); }
 /* --- Detalle ----------------------------------------------------------- */
 
 .migas { margin-bottom: var(--e-3); font-size: var(--t-0); }
-.migas a { color: var(--grafito); text-decoration: none; font-weight: 500; }
+.migas a {
+  display: inline-flex;
+  gap: var(--e-1);
+  color: var(--grafito);
+  text-decoration: none;
+  font-weight: 500;
+}
 .migas a:hover { color: var(--cobalto); }
+.migas .flecha { transition: transform var(--m-sale) var(--curva); }
+@media (hover: hover) and (pointer: fine) {
+  .migas a:hover .flecha {
+    transform: translateX(-3px);
+    transition-duration: var(--m-entra);
+  }
+}
 
 .detalle-cabecera {
   display: grid;
@@ -622,6 +796,12 @@ input[type="file"]::file-selector-button:hover { border-color: var(--grafito); }
     padding: var(--e-3) 0;
     background: var(--papel);
     border-bottom: 1px solid var(--linea-suave);
+  }
+  @supports (backdrop-filter: blur(1px)) {
+    .cabecera-detalle {
+      background: color-mix(in srgb, var(--papel) 85%, transparent);
+      backdrop-filter: saturate(1.4) blur(12px);
+    }
   }
 }
 
@@ -843,7 +1023,10 @@ dialog {
   width: min(32rem, calc(100% - 2 * var(--e-4)));
   box-shadow: var(--sombra-alta);
 }
-dialog::backdrop { background: rgb(15 20 18 / 0.45); }
+dialog::backdrop {
+  background: rgb(15 20 18 / 0.45);
+  backdrop-filter: blur(2px);
+}
 dialog h2 { margin-bottom: var(--e-2); }
 dialog p { color: var(--grafito); margin-bottom: var(--e-4); }
 dialog .error-formulario { margin: var(--e-2) 0 0; }
@@ -851,9 +1034,16 @@ dialog .acciones { justify-content: flex-end; margin-top: var(--e-4); }
 dialog .formulario { gap: var(--e-4); }
 dialog .formulario p { margin-bottom: 0; }
 dialog .formulario .acciones { margin-top: 0; }
+/* El diálogo se asienta desde un poco más pequeño y el fondo se oscurece
+   a la vez; al cerrar desaparece en seguida, sin hacer esperar. */
 @media (prefers-reduced-motion: no-preference) {
-  dialog[open] { animation: aparecer 0.15s ease-out; }
+  dialog[open] { animation: asentarse var(--m-panel) var(--curva-llegada); }
+  dialog[open]::backdrop { animation: fundido var(--m-panel) var(--curva); }
 }
+@keyframes asentarse {
+  from { opacity: 0; scale: 0.98; translate: 0 var(--e-2); }
+}
+@keyframes fundido { from { opacity: 0; } }
 
 /* --- Aviso flotante ---------------------------------------------------- */
 
@@ -872,10 +1062,76 @@ dialog .formulario .acciones { margin-top: 0; }
 }
 .aviso.error { background: var(--critico); color: var(--superficie); }
 @media (prefers-reduced-motion: no-preference) {
-  .aviso:not([hidden]) { animation: aparecer 0.2s ease-out; }
+  .aviso:not([hidden]) {
+    animation: aparecer var(--m-llega) var(--curva-llegada);
+  }
+  .aviso.saliendo {
+    animation: desaparecer var(--m-panel) var(--curva) forwards;
+  }
 }
 @keyframes aparecer {
-  from { opacity: 0; translate: 0 var(--e-2); }
+  from { opacity: 0; translate: 0 var(--e-3); }
+}
+@keyframes desaparecer {
+  to { opacity: 0; translate: 0 var(--e-2); }
+}
+
+/* --- Entrada de cada vista -------------------------------------------- */
+
+/* Al navegar, el título sube primero y el resto llega detrás, escalonado
+   60 ms; todo asentado en menos de un segundo y solo una vez por
+   navegación (app.js quita .entrando al terminar, así que repintar tras
+   una acción no vuelve a animar). Sin JavaScript o con movimiento
+   reducido, la página está quieta desde el principio. */
+@media (prefers-reduced-motion: no-preference) {
+  .entrando > *,
+  .entrando .acceso-presentacion > *,
+  .entrando .acceso-tarjeta {
+    animation: aparecer var(--m-llega) var(--curva-llegada) both;
+  }
+  .entrando > :nth-child(2) { animation-delay: 60ms; }
+  .entrando > :nth-child(3) { animation-delay: 120ms; }
+  .entrando > :nth-child(4) { animation-delay: 180ms; }
+  .entrando > :nth-child(5) { animation-delay: 240ms; }
+  .entrando > :nth-child(n+6) { animation-delay: 300ms; }
+
+  .entrando > .cargando {
+    animation: aparecer var(--m-panel) var(--curva) 300ms both;
+  }
+
+  /* En la cabecera se mueven sus piezas, no el bloque entero. */
+  .entrando > .cabecera { animation: none; }
+  .entrando .cabecera h1 {
+    animation: subir 700ms var(--curva-llegada) both;
+  }
+  .entrando .cabecera h1 ~ *, .entrando .cabecera > :not(:first-child) {
+    animation: aparecer var(--m-llega) var(--curva-llegada) 120ms both;
+  }
+  .entrando .cabecera > :not(:first-child) { animation-delay: 180ms; }
+
+  /* Acceso: el lema sube, los pasos llegan uno a uno y la tarjeta se
+     asienta. */
+  .entrando > .acceso { animation: none; }
+  .entrando .acceso-presentacion > :nth-child(2) {
+    animation-name: subir;
+    animation-duration: 700ms;
+    animation-delay: 60ms;
+  }
+  .entrando .acceso-presentacion > :nth-child(3) { animation: none; }
+  .entrando .acceso-pasos li {
+    animation: aparecer var(--m-llega) var(--curva-llegada) both;
+  }
+  .entrando .acceso-pasos li:nth-child(1) { animation-delay: 300ms; }
+  .entrando .acceso-pasos li:nth-child(2) { animation-delay: 360ms; }
+  .entrando .acceso-pasos li:nth-child(3) { animation-delay: 420ms; }
+  .entrando .acceso-tarjeta {
+    animation-name: asentarse;
+    animation-duration: 900ms;
+    animation-delay: 120ms;
+  }
+}
+@keyframes subir {
+  from { opacity: 0; translate: 0 0.4em; }
 }
 
 /* --- Auditoría --------------------------------------------------------- */
@@ -930,6 +1186,7 @@ dialog .formulario .acciones { margin-top: 0; }
   }
   .menu { grid-column: 1 / -1; grid-row: 2; overflow-x: auto; scrollbar-width: none; }
   .menu a { padding: var(--e-3) var(--e-2); }
+  .menu a::after { left: var(--e-2); right: var(--e-2); }
   .cuenta-nombre, .cuenta-rol { display: none; }
   main { padding-top: var(--e-5); }
   .linea-meta { gap: var(--e-1) var(--e-4); }

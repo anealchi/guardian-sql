@@ -4,7 +4,8 @@
         │  ▲                  │                               ├─▶ no_aplicada
         │  └──reanalizar──────┤                               └─▶ fallida
         ├──rechazar──▶ rechazada              ejecutada ──deshacer──▶ deshecha
-        └──cancelar──▶ cancelada
+        ├──cancelar──▶ cancelada
+        └──editar───▶ pendiente (solo quien la pidió)
 
 Si el servidor se detiene a mitad de una ejecución, la solicitud se queda
 en 'ejecutando'; `recuperar()` mira en PostgreSQL si hubo COMMIT y la pasa
@@ -12,10 +13,16 @@ a 'ejecutada' o 'no_aplicada' (o 'deshecha' si se deshizo por la CLI).
 
 Reglas principales:
 
-- Quien aprueba es un aprobador o admin **distinto** de quien solicita.
+- Quien aprueba es un aprobador o admin. Puede aprobar sus propias
+  solicitudes; el evento lo marca con `propia` para que se vea en la
+  auditoría.
 - Solo se aprueba con el impacto calculado contra la base de datos, y lo
   que se aprueba es exactamente ese script (se comprueba su hash) con esas
   opciones.
+- Mientras está pendiente, quien la pidió puede editarla; si cambia el
+  script o la conexión, se vuelve a analizar. Como el aprobador podría
+  tener abierta la versión anterior, `aprobar()` acepta la `version()` que
+  vio y no aprueba si ya no es la actual.
 - Al ejecutar, si una sentencia cambia un número de filas distinto del que
   vio el aprobador (en los recuentos exactos), no se hace COMMIT: hay que
   reanalizar y volver a aprobar.
@@ -24,6 +31,7 @@ Reglas principales:
 """
 
 import hashlib
+import json
 
 import psycopg
 
@@ -61,6 +69,18 @@ def _hash(sql):
 
 def _es_aprobador(usuario):
     return usuario["rol"] in ("aprobador", "admin")
+
+
+def version(solicitud):
+    """Huella de lo que se aprueba: script, conexión, opciones e informe.
+
+    Cambia al editar o reanalizar, no al comentar. No se usa la fecha de
+    actualización porque solo tiene precisión de segundos.
+    """
+    contenido = json.dumps(
+        [solicitud["hash"], solicitud["conexion"], solicitud["opciones"],
+         solicitud["informe"]], sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(contenido.encode("utf-8")).hexdigest()[:16]
 
 
 def filas_aprobadas(informe):
@@ -126,8 +146,9 @@ class Servicio:
 
     # --- Acciones -------------------------------------------------------
 
-    def crear(self, usuario, titulo, motivo, conexion, script_nombre, sql,
-              ignorar_tablas=(), permitir_indirectos=False, forzar=False):
+    def _datos(self, titulo, motivo, conexion, script_nombre, sql,
+               ignorar_tablas, permitir_indirectos, forzar):
+        """Valida y normaliza lo que se rellena al crear o editar."""
         titulo = (titulo or "").strip()
         if not titulo:
             raise ErrorFlujo("Falta el título.")
@@ -139,23 +160,77 @@ class Servicio:
         ignorar = sorted({t.strip() for t in
                           list(ignorar_tablas) + datos_conexion.ignorar_tablas
                           if t and t.strip()})
-        opciones = {"ignorar_tablas": ignorar,
-                    "permitir_indirectos": bool(permitir_indirectos),
-                    "forzar": bool(forzar)}
-        informe = self.analizar(conexion, sql)
-        with self.almacen.transaccion() as db:
-            solicitud_id = self.almacen.insertar_solicitud(db, {
-                "titulo": titulo[:200], "motivo": (motivo or "").strip(),
+        return {"titulo": titulo[:200], "motivo": (motivo or "").strip(),
                 "conexion": conexion,
                 "script_nombre": (script_nombre or "script.sql")[:200],
-                "sql": sql, "hash": _hash(sql), "opciones": opciones,
-                "estado": "pendiente", "informe": informe,
-                "informe_fecha": _ahora(), "solicitante_id": usuario["id"]})
+                "sql": sql, "hash": _hash(sql),
+                "opciones": {"ignorar_tablas": ignorar,
+                             "permitir_indirectos": bool(permitir_indirectos),
+                             "forzar": bool(forzar)}}
+
+    def crear(self, usuario, titulo, motivo, conexion, script_nombre, sql,
+              ignorar_tablas=(), permitir_indirectos=False, forzar=False):
+        datos = self._datos(titulo, motivo, conexion, script_nombre, sql,
+                            ignorar_tablas, permitir_indirectos, forzar)
+        informe = self.analizar(conexion, sql)
+        with self.almacen.transaccion() as db:
+            solicitud_id = self.almacen.insertar_solicitud(db, dict(
+                datos, estado="pendiente", informe=informe,
+                informe_fecha=_ahora(), solicitante_id=usuario["id"]))
             self.almacen.registrar(db, usuario, "crear", solicitud_id, {
-                "hash": _hash(sql), "conexion": conexion,
-                "opciones": opciones,
+                "hash": datos["hash"], "conexion": conexion,
+                "opciones": datos["opciones"],
                 "veredicto": informe["veredicto"]["nivel"],
                 "filas_previstas": informe["filas_previstas"]})
+            return self.almacen.solicitud(solicitud_id, db)
+
+    def editar(self, usuario, solicitud_id, titulo, motivo, conexion,
+               script_nombre, sql, ignorar_tablas=(),
+               permitir_indirectos=False, forzar=False):
+        """Cambia una solicitud pendiente. Solo quien la pidió.
+
+        Si cambia el script o la conexión, se vuelve a analizar (fuera de
+        la transacción, como en `reanalizar`). El evento guarda qué campos
+        cambiaron y, si cambió el script, el hash anterior y el nuevo.
+        """
+        with self.almacen.transaccion() as db:
+            solicitud = self._cargar(db, solicitud_id)
+        if usuario["id"] != solicitud["solicitante_id"]:
+            raise Prohibido("Solo quien la pidió puede editarla.")
+        if solicitud["estado"] != "pendiente":
+            raise Conflicto("Solo se puede editar una solicitud pendiente "
+                            "de aprobar.")
+        datos = self._datos(titulo, motivo, conexion, script_nombre, sql,
+                            ignorar_tablas, permitir_indirectos, forzar)
+        cambios = sorted(
+            clave for clave in ("titulo", "motivo", "conexion",
+                                "script_nombre", "sql", "opciones")
+            if datos[clave] != solicitud[clave])
+        if not cambios:
+            return solicitud
+        if "sql" in cambios or "conexion" in cambios:
+            informe = self.analizar(conexion, sql)
+            datos.update(informe=informe, informe_fecha=_ahora())
+        with self.almacen.transaccion() as db:
+            actual = self._cargar(db, solicitud_id)
+            # Si mientras se analizaba alguien la editó o la reanalizó, se
+            # rechaza: si no, se perderían sus cambios sin que lo sepa.
+            if version(actual) != version(solicitud):
+                raise Conflicto("La solicitud ha cambiado mientras la "
+                                "editabas. Vuelve a abrirla.")
+            self._transicion(db, actual, ("pendiente",), **datos)
+            detalle = {"cambios": cambios}
+            if "sql" in cambios:
+                detalle.update(hash_anterior=solicitud["hash"],
+                               hash=datos["hash"])
+            if "opciones" in cambios:
+                detalle["opciones"] = datos["opciones"]
+            if "informe" in datos:
+                detalle.update(
+                    veredicto=datos["informe"]["veredicto"]["nivel"],
+                    filas_previstas=datos["informe"]["filas_previstas"])
+            self.almacen.registrar(db, usuario, "editar", solicitud_id,
+                                   detalle)
             return self.almacen.solicitud(solicitud_id, db)
 
     def reanalizar(self, usuario, solicitud_id):
@@ -179,14 +254,17 @@ class Servicio:
                 "aprobacion_anulada": solicitud["estado"] == "aprobada"})
             return self.almacen.solicitud(solicitud_id, db)
 
-    def aprobar(self, usuario, solicitud_id, comentario=""):
+    def aprobar(self, usuario, solicitud_id, comentario="", vista=None):
+        """Aprueba. `vista` es la `version()` que tenía abierta el aprobador:
+        si se pasa y ya no es la actual, no se aprueba."""
         if not _es_aprobador(usuario):
             raise Prohibido("Solo un aprobador puede aprobar.")
         with self.almacen.transaccion() as db:
             solicitud = self._cargar(db, solicitud_id)
-            if solicitud["solicitante_id"] == usuario["id"]:
-                raise Prohibido("No puedes aprobar tu propia solicitud: "
-                                "tiene que hacerlo otra persona.")
+            if vista is not None and vista != version(solicitud):
+                raise Conflicto("La solicitud ha cambiado desde que la "
+                                "abriste. Revisa la versión actual antes "
+                                "de aprobarla.")
             informe = solicitud["informe"] or {}
             if informe.get("impacto") is None:
                 raise Conflicto("No hay impacto calculado contra la base de "
@@ -200,9 +278,13 @@ class Servicio:
             self._transicion(db, solicitud, ("pendiente",),
                              estado="aprobada", aprobador_id=usuario["id"],
                              aprobada_en=_ahora())
-            self.almacen.registrar(db, usuario, "aprobar", solicitud_id, {
-                "hash": solicitud["hash"], "comentario": comentario.strip(),
-                "filas_aprobadas": filas_aprobadas(informe)})
+            detalle = {"hash": solicitud["hash"],
+                       "comentario": comentario.strip(),
+                       "filas_aprobadas": filas_aprobadas(informe)}
+            if solicitud["solicitante_id"] == usuario["id"]:
+                detalle["propia"] = True
+            self.almacen.registrar(db, usuario, "aprobar", solicitud_id,
+                                   detalle)
             return self.almacen.solicitud(solicitud_id, db)
 
     def rechazar(self, usuario, solicitud_id, comentario):

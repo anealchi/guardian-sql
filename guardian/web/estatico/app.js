@@ -38,6 +38,7 @@ const EVENTOS = {
   cancelar: "Canceló la solicitud",
   comentar: "Comentó",
   reanalizar: "Volvió a analizar el script",
+  editar: "Editó la solicitud",
   ejecucion_iniciada: "Empezó la ejecución",
   ejecucion_ejecutada: "Ejecutó y aplicó los cambios",
   ejecucion_no_aplicada: "Ejecutó, pero no se aplicó nada",
@@ -54,7 +55,25 @@ const EVENTOS = {
   desactivar_usuario: "Desactivó un usuario",
 };
 
-const EVENTOS_BUENOS = new Set(["aprobar", "ejecucion_ejecutada"]);
+// Texto de un evento del historial o de la auditoría.
+function nombreEvento(e) {
+  if (e.accion === "aprobar" && e.detalle && e.detalle.propia) {
+    return "Aprobó su propia solicitud";
+  }
+  return EVENTOS[e.accion] || e.accion;
+}
+
+// Campos que puede listar el evento "editar" en `cambios`.
+const CAMPOS_EDITADOS = {
+  conexion: "la base de datos",
+  motivo: "el motivo",
+  opciones: "las opciones",
+  script_nombre: "el nombre del script",
+  sql: "el script",
+  titulo: "el título",
+};
+
+const EVENTOS_BUENOS =new Set(["aprobar", "ejecucion_ejecutada"]);
 const EVENTOS_MALOS = new Set([
   "rechazar", "ejecucion_no_aplicada", "ejecucion_fallida",
   "deshacer_fallido", "acceso_fallido",
@@ -99,13 +118,57 @@ function filasTexto(n) {
   return n === 1 ? "fila" : "filas";
 }
 
+// "fila prevista" / "filas previstas": el participio concuerda con n.
+function filasYParticipio(n, participio) {
+  return n === 1 ? `fila ${participio}` : `filas ${participio}s`;
+}
+
+// "Cambió el script y el título." y, si se volvió a analizar, las filas.
+function textoEdicion(d) {
+  const nombres = d.cambios.map((c) => CAMPOS_EDITADOS[c] || c);
+  const lista = nombres.length > 1
+    ? `${nombres.slice(0, -1).join(", ")} y ${nombres[nombres.length - 1]}`
+    : nombres[0];
+  let texto = `Cambió ${lista}.`;
+  if (d.veredicto) {
+    texto += ` Se volvió a analizar: ${numero(d.filas_previstas)} ` +
+      `${filasYParticipio(d.filas_previstas, "prevista")}.`;
+  }
+  return texto;
+}
+
+const moverMenos = matchMedia("(prefers-reduced-motion: reduce)");
+
 function avisar(texto, esError = false) {
   const aviso = document.querySelector(".aviso");
   aviso.textContent = texto;
   aviso.classList.toggle("error", esError);
+  aviso.classList.remove("saliendo");
   aviso.hidden = false;
   clearTimeout(avisar.temporizador);
-  avisar.temporizador = setTimeout(() => { aviso.hidden = true; }, 6000);
+  avisar.temporizador = setTimeout(() => {
+    // Se desvanece antes de ocultarse; con movimiento reducido, de golpe.
+    if (moverMenos.matches) { aviso.hidden = true; return; }
+    aviso.classList.add("saliendo");
+    avisar.temporizador = setTimeout(() => {
+      aviso.hidden = true;
+      aviso.classList.remove("saliendo");
+    }, 200);
+  }, 6000);
+}
+
+// Marca <main> para que la vista que se pinta a continuación entre con su
+// animación (ver «Entrada de cada vista» en estilos.css). La marca se
+// quita al terminar: lo que se repinta después ya no se anima.
+function entrada() {
+  clearTimeout(entrada.temporizador);
+  principal.classList.add("entrando");
+}
+
+function finEntrada() {
+  clearTimeout(entrada.temporizador);
+  entrada.temporizador = setTimeout(
+    () => principal.classList.remove("entrando"), 1200);
 }
 
 class ErrorApi extends Error {
@@ -211,6 +274,7 @@ const rutas = [
   [/^#?\/?$/, "bandeja", verBandeja],
   [/^#\/nueva$/, "nueva", verNueva],
   [/^#\/solicitud\/(\d+)$/, "bandeja", verDetalle],
+  [/^#\/solicitud\/(\d+)\/editar$/, "bandeja", verEditar],
   [/^#\/auditoria$/, "auditoria", verAuditoria],
   [/^#\/usuarios$/, "usuarios", verUsuarios],
 ];
@@ -228,6 +292,7 @@ async function navegar() {
         a.scrollIntoView({ block: "nearest", inline: "nearest" });
       } else a.removeAttribute("aria-current");
     });
+    entrada();
     vaciar(principal, h("p", { clase: "cargando" }, "Cargando…"));
     try {
       await vista(...coincide.slice(1));
@@ -239,6 +304,7 @@ async function navegar() {
           h("a", { href: "#/" }, "Volver a las solicitudes")));
       }
     }
+    finEntrada();
     return;
   }
   location.hash = "#/";
@@ -278,6 +344,7 @@ function mostrarAcceso() {
     } finally { boton.disabled = false; }
   });
   const logo = document.querySelector(".marca svg").cloneNode(true);
+  entrada();
   vaciar(principal, h("section", { clase: "acceso" },
     h("div", { clase: "acceso-presentacion" },
       h("p", { clase: "acceso-marca" }, logo, "SQL Guardian"),
@@ -286,13 +353,14 @@ function mostrarAcceso() {
       h("ol", { clase: "acceso-pasos" },
         h("li", {}, h("span", {}, h("b", {}, "Envías el script."),
           " Se analiza contra la base de datos: filas, triggers y riesgos.")),
-        h("li", {}, h("span", {}, h("b", {}, "Otra persona lo aprueba"),
+        h("li", {}, h("span", {}, h("b", {}, "Un aprobador lo aprueba"),
           " con esos números de filas exactos.")),
         h("li", {}, h("span", {}, h("b", {}, "Se ejecuta con respaldo."),
           " Si las filas no coinciden, no se aplica nada; si algo sale " +
           "mal, se deshace.")))),
     h("div", { clase: "acceso-tarjeta" },
       h("h2", {}, "Iniciar sesión"), formulario)));
+  finEntrada();
   nombre.focus();
 }
 
@@ -334,7 +402,9 @@ async function verBandeja() {
   const solicitudes = await api("GET", "/api/solicitudes");
   let filtro = sessionStorage.getItem("filtro") || "todas";
   if (!FILTROS.some(([clave]) => clave === filtro)) filtro = "todas";
-  const cuerpo = h("div");
+  // .bandeja hace que la página ocupe justo la pantalla y que solo se
+  // desplace la tabla (ver estilos.css).
+  const cuerpo = h("div", { clase: "bandeja" });
 
   const pintar = () => {
     const estados = FILTROS.find(([clave]) => clave === filtro)[2];
@@ -365,7 +435,7 @@ async function verBandeja() {
       h("div", {},
         h("h1", {}, "Solicitudes"),
         h("p", {}, "Cada script se analiza contra la base de datos al " +
-          "enviarlo. Lo aprueba otra persona y se ejecuta con respaldo.")),
+          "enviarlo. Lo aprueba un aprobador y se ejecuta con respaldo.")),
       h("a", { clase: "boton boton-principal", href: "#/nueva" },
         "Nueva solicitud")),
     cuerpo);
@@ -424,9 +494,27 @@ function tablaSolicitudes(solicitudes) {
       h("tbody", {}, filas)));
 }
 
-// --- Nueva solicitud ------------------------------------------------------
+// --- Nueva solicitud y edición --------------------------------------------
 
 function verNueva() {
+  formularioSolicitud(null);
+}
+
+// Solo quien la pidió y mientras está pendiente; si no, vuelve al detalle.
+async function verEditar(id) {
+  const s = await api("GET", `/api/solicitudes/${id}`);
+  if (s.estado !== "pendiente" || s.solicitante_id !== estado.usuario.id) {
+    location.hash = `#/solicitud/${id}`;
+    return;
+  }
+  formularioSolicitud(s);
+}
+
+// Formulario de una solicitud: vacío para crearla o, con `s`, relleno con
+// sus datos para editarla.
+function formularioSolicitud(s) {
+  const editando = Boolean(s);
+  const textoEnviar = editando ? "Guardar cambios" : "Analizar y enviar";
   const conexion = h("select", { name: "conexion", required: true },
     estado.conexiones.map((c) => h("option", { value: c.nombre },
       c.nombre)));
@@ -445,6 +533,7 @@ function verNueva() {
     notaConexion.textContent = partes.join(" ");
   };
   conexion.addEventListener("change", actualizarConexion);
+  if (editando) conexion.value = s.conexion;
   actualizarConexion();
 
   const titulo = h("input", { type: "text", name: "titulo", required: true,
@@ -453,7 +542,7 @@ function verNueva() {
     placeholder: "Qué problema resuelve y cómo se ha comprobado." });
   const sql = h("textarea", { name: "sql", clase: "sql", required: true,
     spellcheck: "false", placeholder: "BEGIN;\n…\nROLLBACK;" });
-  let nombreScript = "script.sql";
+  let nombreScript = editando ? s.script_nombre : "script.sql";
   const archivo = h("input", { type: "file", accept: ".sql,text/plain" });
   archivo.addEventListener("change", async () => {
     const elegido = archivo.files[0];
@@ -468,7 +557,21 @@ function verNueva() {
   const error = h("p", { clase: "error-formulario", hidden: true,
     role: "alert" });
   const enviar = h("button", { type: "submit",
-    clase: "boton boton-principal" }, "Analizar y enviar");
+    clase: "boton boton-principal" }, textoEnviar);
+  if (editando) {
+    // Las tablas que la conexión ignora siempre ya se añaden solas.
+    const deConexion = (estado.conexiones.find(
+      (c) => c.nombre === s.conexion) || { ignorar_tablas: [] })
+      .ignorar_tablas;
+    titulo.value = s.titulo;
+    motivo.value = s.motivo;
+    sql.value = s.sql;
+    ignorar.value = (s.opciones.ignorar_tablas || [])
+      .filter((t) => !deConexion.includes(t)).join(", ");
+    indirectos.checked = Boolean(s.opciones.permitir_indirectos);
+    forzar.checked = Boolean(s.opciones.forzar);
+  }
+  const volver = editando ? `#/solicitud/${s.id}` : "#/";
 
   const formulario = h("form", { clase: "formulario" },
     h("div", { clase: "fila-campos" },
@@ -496,16 +599,17 @@ function verNueva() {
         "lo verá marcado."))),
     error,
     h("div", { clase: "acciones-formulario" }, enviar,
-      h("a", { clase: "boton boton-texto", href: "#/" }, "Cancelar")));
+      h("a", { clase: "boton boton-texto", href: volver }, "Cancelar")));
   sql.id = "sql-nuevo";
 
   formulario.addEventListener("submit", async (evento) => {
     evento.preventDefault();
     enviar.disabled = true;
-    enviar.textContent = "Analizando el script…";
+    enviar.textContent = editando ? "Guardando…" : "Analizando el script…";
     error.hidden = true;
     try {
-      const creada = await api("POST", "/api/solicitudes", {
+      const guardada = await api(editando ? "PATCH" : "POST",
+        editando ? `/api/solicitudes/${s.id}` : "/api/solicitudes", {
         titulo: titulo.value, motivo: motivo.value,
         conexion: conexion.value, script_nombre: nombreScript,
         sql: sql.value,
@@ -513,21 +617,29 @@ function verNueva() {
           .filter(Boolean),
         permitir_indirectos: indirectos.checked, forzar: forzar.checked,
       });
-      location.hash = `#/solicitud/${creada.id}`;
+      if (editando) avisar("Cambios guardados.");
+      location.hash = `#/solicitud/${guardada.id}`;
     } catch (e) {
       if (e.codigo === 401) return;
       error.textContent = e.message;
       error.hidden = false;
       enviar.disabled = false;
-      enviar.textContent = "Analizar y enviar";
+      enviar.textContent = textoEnviar;
     }
   });
 
   vaciar(principal,
+    editando ? h("nav", { clase: "migas", "aria-label": "Ruta" },
+      h("a", { href: volver },
+        h("span", { clase: "flecha", "aria-hidden": "true" }, "←"),
+        `Nº ${s.id}`)) : null,
     h("div", { clase: "cabecera" }, h("div", {},
-      h("h1", {}, "Nueva solicitud"),
-      h("p", {}, "Al enviarla se analiza contra la base de datos elegida. " +
-        "Nada se aplica hasta que otra persona la apruebe y se ejecute."))),
+      h("h1", {}, editando ? "Editar solicitud" : "Nueva solicitud"),
+      h("p", {}, editando
+        ? "Si cambias el script o la base de datos, se vuelve a analizar. " +
+          "Solo se puede editar mientras nadie la haya aprobado."
+        : "Al enviarla se analiza contra la base de datos elegida. " +
+          "Nada se aplica hasta que un aprobador la apruebe y se ejecute."))),
     formulario);
   titulo.focus();
 }
@@ -575,17 +687,29 @@ function accionesDisponibles(s) {
           : "No se aplicó nada.", r.estado === "no_aplicada");
     }));
   }
-  if (s.estado === "pendiente" && esAprobador() && !mia) {
+  if (s.estado === "pendiente" && esAprobador()) {
     lista.push(botonAccion("Aprobar", "boton-principal", async () => {
       const ok = await confirmar({
-        titulo: "¿Aprobar esta solicitud?",
+        titulo: mia ? "¿Aprobar tu propia solicitud?"
+          : "¿Aprobar esta solicitud?",
         texto: "Apruebas este script exacto con los números de filas del " +
-          "informe. Si cambian al ejecutarlo, no se aplicará.",
+          "informe. Si cambian al ejecutarlo, no se aplicará." +
+          (mia ? " Nadie más lo revisará: en el historial y la auditoría " +
+            "constará que la aprobaste tú." : ""),
         boton: "Aprobar",
         comentario: { etiqueta: "Comentario (opcional)" },
       });
-      if (ok) { await hacer("aprobar", ok)(); avisar("Aprobada."); }
+      // Con la versión que se está viendo: si alguien la ha editado
+      // mientras tanto, el servidor no la aprueba.
+      if (ok) {
+        await hacer("aprobar", { ...ok, version: s.version })();
+        avisar("Aprobada.");
+      }
     }));
+  }
+  if (s.estado === "pendiente" && mia) {
+    lista.push(h("a", { clase: "boton", href: `#/solicitud/${s.id}/editar` },
+      "Editar"));
   }
   if (s.estado === "ejecutada" && esAprobador()) {
     lista.push(botonAccion("Deshacer", "boton-peligro", async () => {
@@ -656,7 +780,9 @@ function pintarDetalle(s) {
 
   vaciar(principal,
     h("nav", { clase: "migas", "aria-label": "Ruta" },
-      h("a", { href: "#/" }, "← Solicitudes")),
+      h("a", { href: "#/" },
+        h("span", { clase: "flecha", "aria-hidden": "true" }, "←"),
+        "Solicitudes")),
     // Fuera de .detalle-cabecera: sticky solo funciona dentro de su
     // contenedor, y así se queda arriba mientras se recorre el script.
     h("div", { clase: "cabecera cabecera-detalle" },
@@ -713,8 +839,8 @@ function bloqueVeredicto(s, informe) {
   }
   return h("div", { clase: `veredicto veredicto-${nivel}` },
     h("div", { clase: "cifra" }, numero(cifra),
-      h("small", {}, `${filasTexto(cifra)} ` +
-        (aplicadas ? "cambiadas" : "previstas"))),
+      h("small", {}, filasYParticipio(cifra,
+        aplicadas ? "cambiada" : "prevista"))),
     h("p", { clase: "veredicto-texto" }, informe.veredicto.texto),
     h("p", { clase: "secundario" }, detalle.join(" ")));
 }
@@ -825,8 +951,8 @@ function anotacionesPorLinea(s, informe) {
   for (const r of (impacto && impacto.resultados) || []) {
     const real = ejecutada ? reales.get(r.linea) : null;
     const filas = real ? real.filas : r.filas;
-    const etiqueta = real ? `${filasTexto(filas)} cambiadas`
-      : r.operacion === "SELECT" ? `${filasTexto(filas)} devueltas`
+    const etiqueta = real ? filasYParticipio(filas, "cambiada")
+      : r.operacion === "SELECT" ? filasYParticipio(filas, "devuelta")
         : r.precision === "aproximado" ? `${filasTexto(filas)}, aproximado`
           : r.precision === "exacto" ? filasTexto(filas) : r.precision;
     const temporal = r.operacion.startsWith("CREATE TEMP");
@@ -956,7 +1082,9 @@ function seccionHistorial(s) {
       const d = e.detalle || {};
       return h("li", { clase },
         h("span", { clase: "quien" }, e.usuario), " ",
-        EVENTOS[e.accion] || e.accion,
+        nombreEvento(e),
+        d.cambios ? h("div", { clase: "secundario pequeno" },
+          textoEdicion(d)) : null,
         h("div", { clase: "cuando" }, fecha(e.fecha)),
         d.comentario ? h("blockquote", {}, d.comentario) : null,
         d.motivo ? h("blockquote", {}, d.motivo) : null);
@@ -1011,7 +1139,7 @@ function filaEvento(e) {
   return h("tr", {},
     h("td", { clase: "secundario" }, fecha(e.fecha)),
     h("td", {}, e.usuario),
-    h("td", {}, EVENTOS[e.accion] || e.accion,
+    h("td", {}, nombreEvento(e),
       e.detalle && e.detalle.usuario
         ? h("span", { clase: "secundario" }, ` (${e.detalle.usuario})`)
         : null),
