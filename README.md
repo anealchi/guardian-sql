@@ -28,6 +28,14 @@ guardian usuario crear admin --rol admin
 guardian web                                       # http://127.0.0.1:8000
 ```
 
+Los administradores cambian el nombre completo, el rol o la contraseña de
+cada usuario desde la página **Usuarios** (botón «Editar»), o con
+`guardian usuario modificar NOMBRE [--rol R] [--nombre-completo X]
+[--clave]`, que sirve para recuperar el acceso si se olvida la contraseña
+del administrador. El nombre de usuario no se cambia porque la auditoría lo
+guarda como texto. Al cambiar una contraseña se cierran las sesiones de ese
+usuario, y siempre tiene que quedar al menos un administrador activo.
+
 El flujo de cada script:
 
 1. **Alguien lo envía.** Se analiza en ese momento contra la base de datos

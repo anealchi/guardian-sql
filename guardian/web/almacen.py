@@ -120,6 +120,21 @@ def _clave_ficticia():
     return _CLAVE_FICTICIA[0]
 
 
+def _validar_rol(rol):
+    if rol not in ROLES:
+        raise ValueError(f"Rol no válido: {rol}")
+
+
+def _validar_clave(clave):
+    if len(clave) < 10:
+        raise ValueError("La contraseña debe tener al menos 10 caracteres.")
+
+
+def _admins_activos(db):
+    return db.execute("SELECT count(*) FROM usuarios WHERE rol = 'admin' "
+                      "AND activo = 1").fetchone()[0]
+
+
 def _hash_token(token):
     return hashlib.sha256(token.encode("ascii")).hexdigest()
 
@@ -161,11 +176,8 @@ class Almacen:
     # --- Usuarios -------------------------------------------------------
 
     def crear_usuario(self, nombre, clave, rol, nombre_completo=""):
-        if rol not in ROLES:
-            raise ValueError(f"Rol no válido: {rol}")
-        if len(clave) < 10:
-            raise ValueError("La contraseña debe tener al menos 10 "
-                             "caracteres.")
+        _validar_rol(rol)
+        _validar_clave(clave)
         with self.transaccion() as db:
             try:
                 cur = db.execute(
@@ -189,6 +201,59 @@ class Almacen:
                 "SELECT id, nombre, nombre_completo, rol, activo "
                 "FROM usuarios WHERE id = ?", (usuario_id,)).fetchone()
         return dict(fila) if fila else None
+
+    def modificar_usuario(self, usuario_id, autor, nombre_completo=None,
+                          rol=None, clave=None, conservar_token=None):
+        """Cambia el nombre completo, el rol o la contraseña.
+
+        El nombre de usuario no se cambia: la auditoría lo guarda como texto.
+        Los valores None se dejan como están. Registra el evento en la misma
+        transacción y devuelve los cambios ({campo: [antes, después]}, y
+        `clave: True` sin el valor), o None si el usuario no existe.
+        Con contraseña nueva se cierran sus sesiones, salvo `conservar_token`
+        (la de quien se la cambia a sí mismo).
+        """
+        if rol is not None:
+            _validar_rol(rol)
+        # PBKDF2 tarda: se calcula antes de bloquear la base.
+        cifrada = None
+        if clave is not None:
+            _validar_clave(clave)
+            cifrada = cifrar_clave(clave)
+        with self.transaccion() as db:
+            fila = db.execute(
+                "SELECT nombre, nombre_completo, rol, activo FROM usuarios "
+                "WHERE id = ?", (usuario_id,)).fetchone()
+            if fila is None:
+                return None
+            cambios = {}
+            if (nombre_completo is not None
+                    and nombre_completo != fila["nombre_completo"]):
+                cambios["nombre_completo"] = [fila["nombre_completo"],
+                                              nombre_completo]
+            if rol is not None and rol != fila["rol"]:
+                if (fila["rol"] == "admin" and fila["activo"]
+                        and _admins_activos(db) <= 1):
+                    raise ValueError("Tiene que quedar al menos un "
+                                     "administrador activo.")
+                cambios["rol"] = [fila["rol"], rol]
+            if cifrada is not None:
+                cambios["clave"] = True
+            if not cambios:
+                return cambios
+            db.execute(
+                "UPDATE usuarios SET nombre_completo = coalesce(?, "
+                "nombre_completo), rol = coalesce(?, rol), clave = "
+                "coalesce(?, clave) WHERE id = ?",
+                (nombre_completo, rol, cifrada, usuario_id))
+            if cifrada is not None:
+                conservar = (_hash_token(conservar_token)
+                             if conservar_token else None)
+                db.execute("DELETE FROM sesiones WHERE usuario_id = ? "
+                           "AND token IS NOT ?", (usuario_id, conservar))
+            self.registrar(db, autor, "modificar_usuario", None,
+                           {"usuario": fila["nombre"], **cambios})
+        return cambios
 
     def cambiar_activo(self, usuario_id, activo):
         with self.transaccion() as db:

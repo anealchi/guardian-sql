@@ -49,6 +49,7 @@ const EVENTOS = {
   acceso: "Inició sesión",
   acceso_fallido: "Intento de acceso fallido",
   crear_usuario: "Creó un usuario",
+  modificar_usuario: "Modificó un usuario",
   activar_usuario: "Activó un usuario",
   desactivar_usuario: "Desactivó un usuario",
 };
@@ -295,15 +296,19 @@ function mostrarAcceso() {
   nombre.focus();
 }
 
-async function arrancar() {
+function pintarCuenta() {
   const barra = document.querySelector(".barra");
-  barra.hidden = false;
   barra.querySelector(".cuenta-nombre").textContent =
     estado.usuario.nombre_completo || estado.usuario.nombre;
   barra.querySelector(".cuenta-rol").textContent =
     NOMBRES_ROL[estado.usuario.rol];
   barra.querySelector("[data-solo-admin]").hidden =
     estado.usuario.rol !== "admin";
+}
+
+async function arrancar() {
+  document.querySelector(".barra").hidden = false;
+  pintarCuenta();
   estado.conexiones = await api("GET", "/api/conexiones");
   await navegar();
 }
@@ -1080,20 +1085,102 @@ async function verUsuarios() {
           h("th", { scope: "col" }, "Estado"),
           h("th", { scope: "col" },
             h("span", { clase: "solo-lector" }, "Acciones")))),
-        h("tbody", {}, usuarios.map((u) => h("tr", {},
-          h("td", {}, h("b", {}, u.nombre)),
-          h("td", {}, u.nombre_completo || "—"),
-          h("td", {}, h("span", { clase: "rol" }, NOMBRES_ROL[u.rol])),
-          h("td", { clase: u.activo ? "" : "secundario" },
-            u.activo ? "Activo" : "Desactivado"),
-          h("td", {}, u.id === estado.usuario.id ? h("span", {
-            clase: "secundario" }, "Tú") : botonAccion(
-            u.activo ? "Desactivar" : "Activar", "boton-texto", async () => {
-              await api("POST", `/api/usuarios/${u.id}/activo`,
-                { activo: !u.activo });
-              await verUsuarios();
-            }))))))),
+        h("tbody", {}, usuarios.map((u) => {
+          const soyYo = u.id === estado.usuario.id;
+          return h("tr", {},
+            h("td", {}, h("b", {}, u.nombre),
+              soyYo ? h("span", { clase: "secundario" }, " (tú)") : null),
+            h("td", {}, u.nombre_completo || "—"),
+            h("td", {}, h("span", { clase: "rol" }, NOMBRES_ROL[u.rol])),
+            h("td", { clase: u.activo ? "" : "secundario" },
+              u.activo ? "Activo" : "Desactivado"),
+            h("td", {}, h("div", { clase: "acciones" },
+              h("button", {
+                type: "button", clase: "boton boton-texto",
+                "aria-label": `Editar ${u.nombre}`,
+                alClick: () => editarUsuario(u),
+              }, "Editar"),
+              soyYo ? null : botonAccion(
+                u.activo ? "Desactivar" : "Activar", "boton-texto",
+                async () => {
+                  await api("POST", `/api/usuarios/${u.id}/activo`,
+                    { activo: !u.activo });
+                  await verUsuarios();
+                }))));
+        })))),
     h("div", { clase: "columnas" }, formulario));
+}
+
+// Diálogo para cambiar el nombre completo, el rol o la contraseña. El
+// nombre de usuario no se cambia: la auditoría lo guarda como texto.
+function editarUsuario(u) {
+  const soyYo = u.id === estado.usuario.id;
+  const completo = h("input", { type: "text", maxlength: "120",
+    autocomplete: "off" });
+  completo.value = u.nombre_completo;
+  const rol = h("select", { disabled: soyYo }, Object.entries(NOMBRES_ROL)
+    .map(([valor, texto]) => h("option", {
+      value: valor, selected: valor === u.rol }, texto)));
+  const clave = h("input", { type: "password", minlength: "10",
+    autocomplete: "new-password" });
+  const error = h("p", { clase: "error-formulario", hidden: true,
+    role: "alert" });
+  const guardar = h("button", { type: "submit",
+    clase: "boton boton-principal" }, "Guardar cambios");
+  const dialogo = h("dialog", { "aria-labelledby": "dialogo-titulo" });
+  const formulario = h("form", { clase: "formulario" },
+    h("div", {}, h("h2", { id: "dialogo-titulo" }, `Editar ${u.nombre}`),
+      h("p", {}, "El nombre de usuario no se puede cambiar porque la " +
+        "auditoría lo guarda tal cual.")),
+    h("label", { clase: "campo" }, h("span", {}, "Nombre completo"),
+      completo),
+    h("label", { clase: "campo" }, h("span", {}, "Rol"), rol,
+      soyYo ? h("small", {}, "No puedes quitarte a ti mismo el rol de " +
+        "administrador.") : null),
+    h("label", { clase: "campo" }, h("span", {}, "Contraseña nueva"), clave,
+      h("small", {}, soyYo
+        ? "Déjala vacía para no cambiarla. Mínimo 10 caracteres."
+        : "Déjala vacía para no cambiarla. Mínimo 10 caracteres; al " +
+          "cambiarla se cierran sus sesiones abiertas.")),
+    error,
+    h("div", { clase: "acciones" },
+      h("button", { type: "button", clase: "boton",
+        alClick: () => dialogo.close() }, "Volver"),
+      guardar));
+  formulario.addEventListener("submit", async (evento) => {
+    evento.preventDefault();
+    const cambios = {};
+    if (completo.value.trim() !== u.nombre_completo) {
+      cambios.nombre_completo = completo.value.trim();
+    }
+    if (!soyYo && rol.value !== u.rol) cambios.rol = rol.value;
+    if (clave.value) cambios.clave = clave.value;
+    if (!Object.keys(cambios).length) {
+      dialogo.close();
+      return;
+    }
+    guardar.disabled = true;
+    error.hidden = true;
+    try {
+      await api("PATCH", `/api/usuarios/${u.id}`, cambios);
+      dialogo.close();
+      avisar(`Cambios guardados en ${u.nombre}.`);
+      if (soyYo) {
+        estado.usuario = await api("GET", "/api/yo");
+        pintarCuenta();
+      }
+      await verUsuarios();
+    } catch (e) {
+      if (e.codigo === 401) { dialogo.close(); return; }
+      error.textContent = e.message;
+      error.hidden = false;
+    } finally { guardar.disabled = false; }
+  });
+  dialogo.append(formulario);
+  dialogo.addEventListener("close", () => dialogo.remove());
+  document.body.append(dialogo);
+  dialogo.showModal();
+  completo.focus();
 }
 
 // --- Inicio ---------------------------------------------------------------

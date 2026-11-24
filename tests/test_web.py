@@ -319,6 +319,81 @@ def test_usuarios_solo_admin(app):
     assert eva.get("/api/yo").status_code == 401
 
 
+def patch(c, ruta, **json):
+    return c.patch(ruta, json=json, headers=CABECERA)
+
+
+def ids(app):
+    return {u["nombre"]: u["id"] for u in app.state.almacen.usuarios()}
+
+
+def test_modificar_usuario(app):
+    usuarios = ids(app)
+    assert patch(cliente(app, "luis"), f"/api/usuarios/{usuarios['ana']}",
+                 rol="admin").status_code == 403
+    admin = cliente(app, "admin")
+    ana = cliente(app, "ana")
+    r = patch(admin, f"/api/usuarios/{usuarios['ana']}",
+              nombre_completo="  Ana Pérez ", rol="aprobador")
+    assert r.status_code == 200, r.text
+    assert r.json()["nombre_completo"] == "Ana Pérez"
+    assert r.json()["rol"] == "aprobador"
+    # El rol se lee en cada petición: la sesión abierta ya lo tiene.
+    assert ana.get("/api/yo").json()["rol"] == "aprobador"
+
+    # Contraseña nueva: se cierran sus sesiones y la antigua deja de valer.
+    nueva_clave = "otra-clave-larga-456"
+    assert patch(admin, f"/api/usuarios/{usuarios['ana']}",
+                 clave="corta").status_code == 400
+    assert patch(admin, f"/api/usuarios/{usuarios['ana']}",
+                 clave=nueva_clave).status_code == 200
+    assert ana.get("/api/yo").status_code == 401
+    assert post(cliente(app), "/api/sesion", nombre="ana",
+                clave=CLAVE).status_code == 401
+    assert post(cliente(app), "/api/sesion", nombre="ana",
+                clave=nueva_clave).status_code == 200
+
+    assert patch(admin, f"/api/usuarios/{usuarios['ana']}",
+                 rol="jefe").status_code == 400
+    assert patch(admin, "/api/usuarios/999", rol="admin").status_code == 404
+
+    eventos = [e for e in app.state.almacen.eventos(limite=50)
+               if e["accion"] == "modificar_usuario"]
+    assert len(eventos) == 2
+    detalles = sorted((e["detalle"] for e in eventos), key=len)
+    assert detalles[0] == {"usuario": "ana", "clave": True}
+    assert detalles[1] == {"usuario": "ana", "rol": ["solicitante",
+                                                     "aprobador"],
+                           "nombre_completo": ["Ana", "Ana Pérez"]}
+    assert nueva_clave not in str(eventos)
+    assert app.state.almacen.verificar_auditoria()[0]
+
+
+def test_modificar_usuario_a_si_mismo(app):
+    usuarios = ids(app)
+    admin = cliente(app, "admin")
+    ruta = f"/api/usuarios/{usuarios['admin']}"
+    assert patch(admin, ruta, rol="aprobador").status_code == 400
+    # Cambiar su propia contraseña no le cierra la sesión actual.
+    assert patch(admin, ruta, clave="nueva-clave-admin-1").status_code == 200
+    assert admin.get("/api/yo").status_code == 200
+
+
+def test_queda_al_menos_un_admin(app):
+    almacen = app.state.almacen
+    usuarios = ids(app)
+    with pytest.raises(ValueError, match="al menos un administrador"):
+        almacen.modificar_usuario(usuarios["admin"], "consola",
+                                  rol="solicitante")
+    almacen.modificar_usuario(usuarios["luis"], "consola", rol="admin")
+    assert almacen.modificar_usuario(usuarios["admin"], "consola",
+                                     rol="solicitante") == {
+        "rol": ["admin", "solicitante"]}
+    # Sin cambios reales no se registra nada.
+    assert almacen.modificar_usuario(usuarios["luis"], "consola",
+                                     rol="admin") == {}
+
+
 def test_detalle_con_claves_enteras_no_rompe_la_cadena(app):
     # filas_aprobadas usa el índice de sentencia como clave: con índices de
     # dos cifras, el orden de las claves cambia al pasar por JSON.

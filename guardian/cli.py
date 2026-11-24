@@ -6,6 +6,8 @@
     guardian historial [--dsn ...]
     guardian web [--config guardian.toml] [--host ...] [--puerto ...]
     guardian usuario crear NOMBRE --rol admin [--config guardian.toml]
+    guardian usuario modificar NOMBRE [--rol R] [--nombre-completo X]
+                                      [--clave]
 """
 
 import argparse
@@ -136,6 +138,14 @@ def _argumentos(argv):
                     choices=("solicitante", "aprobador", "admin"))
     uc.add_argument("--nombre-completo", default="")
     uc.add_argument("--config", type=Path, default=Path(config))
+    um = usub.add_parser("modificar", help="cambia el rol, el nombre "
+                                           "completo o la contraseña")
+    um.add_argument("nombre")
+    um.add_argument("--rol", choices=("solicitante", "aprobador", "admin"))
+    um.add_argument("--nombre-completo")
+    um.add_argument("--clave", action="store_true",
+                    help="pide una contraseña nueva y cierra sus sesiones")
+    um.add_argument("--config", type=Path, default=Path(config))
     ul = usub.add_parser("listar", help="lista los usuarios")
     ul.add_argument("--config", type=Path, default=Path(config))
     return parser.parse_args(argv)
@@ -367,9 +377,55 @@ def _web(args):
     return SALIDA_OK
 
 
-def _usuario(args):
+def _pedir_clave():
+    """Contraseña de GUARDIAN_CLAVE_NUEVA o pedida dos veces (None: error)."""
     import getpass
 
+    clave = os.environ.get("GUARDIAN_CLAVE_NUEVA")
+    if clave is None:
+        clave = getpass.getpass("Contraseña (mínimo 10 caracteres): ")
+        if getpass.getpass("Repítela: ") != clave:
+            print("Las contraseñas no coinciden.", file=sys.stderr)
+            return None
+    return clave
+
+
+def _modificar_usuario(almacen, args):
+    usuario = next((u for u in almacen.usuarios()
+                    if u["nombre"] == args.nombre), None)
+    if usuario is None:
+        print(f"No existe el usuario {args.nombre}.", file=sys.stderr)
+        return SALIDA_ERROR
+    if args.rol is None and args.nombre_completo is None and not args.clave:
+        print("Indica qué cambiar: --rol, --nombre-completo o --clave.",
+              file=sys.stderr)
+        return SALIDA_ERROR
+    clave = None
+    if args.clave:
+        clave = _pedir_clave()
+        if clave is None:
+            return SALIDA_ERROR
+    try:
+        cambios = almacen.modificar_usuario(
+            usuario["id"], "consola", rol=args.rol, clave=clave,
+            nombre_completo=(args.nombre_completo.strip()
+                             if args.nombre_completo is not None else None))
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return SALIDA_ERROR
+    if not cambios:
+        print(f"{args.nombre} ya estaba así: no se ha cambiado nada.")
+    else:
+        print(f"Usuario {args.nombre} modificado: "
+              f"{', '.join(_NOMBRES_CAMBIO[c] for c in cambios)}.")
+    return SALIDA_OK
+
+
+_NOMBRES_CAMBIO = {"nombre_completo": "nombre completo", "rol": "rol",
+                   "clave": "contraseña (sesiones cerradas)"}
+
+
+def _usuario(args):
     from guardian.web.almacen import Almacen
 
     config = _cargar_config(args.config)
@@ -382,12 +438,11 @@ def _usuario(args):
             print(f"{u['nombre']:<20} {u['rol']:<12} "
                   f"{u['nombre_completo']}{estado}")
         return SALIDA_OK
-    clave = os.environ.get("GUARDIAN_CLAVE_NUEVA")
+    if args.accion == "modificar":
+        return _modificar_usuario(almacen, args)
+    clave = _pedir_clave()
     if clave is None:
-        clave = getpass.getpass("Contraseña (mínimo 10 caracteres): ")
-        if getpass.getpass("Repítela: ") != clave:
-            print("Las contraseñas no coinciden.", file=sys.stderr)
-            return SALIDA_ERROR
+        return SALIDA_ERROR
     try:
         almacen.crear_usuario(args.nombre, clave, args.rol,
                               args.nombre_completo)

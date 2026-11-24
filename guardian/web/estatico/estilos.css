@@ -848,6 +848,9 @@ dialog h2 { margin-bottom: var(--e-2); }
 dialog p { color: var(--grafito); margin-bottom: var(--e-4); }
 dialog .error-formulario { margin: var(--e-2) 0 0; }
 dialog .acciones { justify-content: flex-end; margin-top: var(--e-4); }
+dialog .formulario { gap: var(--e-4); }
+dialog .formulario p { margin-bottom: 0; }
+dialog .formulario .acciones { margin-top: 0; }
 @media (prefers-reduced-motion: no-preference) {
   dialog[open] { animation: aparecer 0.15s ease-out; }
 }

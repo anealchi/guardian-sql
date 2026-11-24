@@ -20,6 +20,7 @@ guardian deshacer ID [--solo-sql] [--confirmar]
 guardian historial
 guardian web [--config guardian.toml]   # aplicación web (F3)
 guardian usuario crear NOMBRE --rol admin
+guardian usuario modificar NOMBRE [--rol R] [--nombre-completo X] [--clave]
 python herramientas/pg_local.py iniciar|parar|dsn
 pytest
 flake8 guardian tests herramientas
@@ -79,7 +80,9 @@ Todo debe pasar flake8 con la configuración por defecto (79 caracteres).
   operación abre conexión con `BEGIN IMMEDIATE` (`transaccion()`); el
   esquema se crea fuera porque `executescript` confirma por su cuenta. Los
   eventos forman una cadena de hashes (`verificar_auditoria`) y hay
-  triggers que impiden UPDATE/DELETE sobre ellos.
+  triggers que impiden UPDATE/DELETE sobre ellos. `modificar_usuario()`
+  registra su evento en la misma transacción, nunca guarda la contraseña en
+  el detalle y no deja quitar el rol al último administrador activo.
 - `servicio.py`: reglas del flujo, sin HTTP (ver el diagrama del
   docstring). Las transiciones se hacen con `UPDATE ... WHERE estado IN
   (...)` para que dos peticiones a la vez no ejecuten dos veces. Al

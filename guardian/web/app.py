@@ -64,6 +64,13 @@ class NuevoUsuario(BaseModel):
     clave: str
 
 
+class CambiosUsuario(BaseModel):
+    """Solo se cambia lo que viene (None = dejarlo como está)."""
+    nombre_completo: str | None = Field(default=None, max_length=120)
+    rol: str | None = None
+    clave: str | None = None
+
+
 class Activo(BaseModel):
     activo: bool
 
@@ -205,6 +212,28 @@ def crear_app(config):
         with almacen.transaccion() as db:
             almacen.registrar(db, admin, "crear_usuario", None,
                               {"usuario": datos.nombre, "rol": datos.rol})
+        return almacen.usuario(usuario_id)
+
+    @app.patch("/api/usuarios/{usuario_id}")
+    def modificar_usuario(usuario_id: int, datos: CambiosUsuario,
+                          request: Request, admin=Depends(solo_admin)):
+        objetivo = almacen.usuario(usuario_id)
+        if objetivo is None:
+            raise HTTPException(404, "No existe el usuario.")
+        yo_mismo = objetivo["id"] == admin["id"]
+        if yo_mismo and datos.rol not in (None, "admin"):
+            raise HTTPException(400, "No puedes quitarte a ti mismo el rol "
+                                "de administrador.")
+        nombre_completo = (datos.nombre_completo.strip()
+                           if datos.nombre_completo is not None else None)
+        try:
+            almacen.modificar_usuario(
+                usuario_id, admin, nombre_completo=nombre_completo,
+                rol=datos.rol, clave=datos.clave,
+                conservar_token=(request.cookies.get(COOKIE)
+                                 if yo_mismo else None))
+        except ValueError as error:
+            raise HTTPException(400, str(error))
         return almacen.usuario(usuario_id)
 
     @app.post("/api/usuarios/{usuario_id}/activo")
